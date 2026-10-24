@@ -45,8 +45,9 @@ public sealed class ShippingQuoteTests
     public async Task Quote_uses_server_sku_weight_not_client_weight_and_persists_amount()
     {
         await using var s = await Store.CreateAsync();
-        var quote = await s.Shipping.QuoteAsync(s.Customer.Id, new("Exact destination", 0.001m));
+        var quote = await s.Shipping.QuoteAsync(s.Customer.Id, new("42 Test Street", 1000001, "Hồ Chí Minh", 1003580, "Phường Thủ Đức", 0.001m));
         Assert.Equal(42000m, quote.Amount); Assert.Equal("Warehouse A", quote.Origin); Assert.Equal(1.5m, s.Carrier.Last!.Weight);
+        Assert.Equal("42 Test Street, Phường Thủ Đức, Hồ Chí Minh", quote.Destination);
         var stored = await s.Db.ShippingQuotes.SingleAsync(); Assert.Equal(s.Customer.Id, stored.CustomerId); Assert.Null(stored.OrderId); Assert.Equal(64, stored.CartFingerprint.Length);
     }
 
@@ -54,18 +55,28 @@ public sealed class ShippingQuoteTests
     public async Task Empty_or_invalid_cart_is_rejected_before_carrier_call()
     {
         await using var s = await Store.CreateAsync();
-        await Assert.ThrowsAsync<BusinessException>(() => s.Shipping.QuoteAsync(Guid.NewGuid(), new("Destination")));
-        await Assert.ThrowsAsync<BusinessException>(() => s.Shipping.QuoteAsync(s.Customer.Id, new("Destination", Items: [new CartItemRequest { ProductId = s.Product.Id, Quantity = 0 }])));
+        await Assert.ThrowsAsync<BusinessException>(() => s.Shipping.QuoteAsync(Guid.NewGuid(), new("42 Test Street", 1000001, "Hồ Chí Minh", 1003580, "Phường Thủ Đức")));
+        await Assert.ThrowsAsync<BusinessException>(() => s.Shipping.QuoteAsync(s.Customer.Id, new("42 Test Street", 1000001, "Hồ Chí Minh", 1003580, "Phường Thủ Đức", Items: [new CartItemRequest { ProductId = s.Product.Id, Quantity = 0 }])));
         Assert.Null(s.Carrier.Last);
+    }
+
+    [Fact]
+    public async Task Disabled_carrier_fails_closed_without_persisting_a_quote()
+    {
+        await using var s = await Store.CreateAsync();
+        var service = new ShippingQuoteService(s.Db, new DisabledCarrier(), Options.Create(new CarrierOptions { Origin = "Warehouse A" }));
+        var error = await Assert.ThrowsAsync<BusinessException>(() => service.QuoteAsync(s.Customer.Id, new("42 Test Street", 1000001, "Hồ Chí Minh", 1003580, "Phường Thủ Đức")));
+        Assert.Equal(503, error.StatusCode);
+        Assert.Empty(await s.Db.ShippingQuotes.ToListAsync());
     }
 
     [Fact]
     public async Task Checkout_consumes_exact_server_quote_and_replay_returns_same_order()
     {
         await using var s = await Store.CreateAsync();
-        var quote = await s.Shipping.QuoteAsync(s.Customer.Id, new("Exact destination"));
+        var quote = await s.Shipping.QuoteAsync(s.Customer.Id, new("42 Test Street", 1000001, "Hồ Chí Minh", 1003580, "Phường Thủ Đức"));
         var service = new CommerceService(s.Db);
-        var request = new CheckoutRequest { ShippingAddress = "Exact destination", ShippingQuoteId = quote.Id, IdempotencyKey = "shipping-checkout" };
+        var request = new CheckoutRequest { ShippingAddress = quote.Destination, ShippingQuoteId = quote.Id, IdempotencyKey = "shipping-checkout" };
         var order = await service.CheckoutAsync(s.Customer.Id, request);
         var replay = await service.CheckoutAsync(s.Customer.Id, request);
         Assert.Equal(42000m, order.ShippingFee); Assert.Equal(242000m, order.TotalAmount); Assert.Equal(order.Id, replay.Id);
@@ -77,12 +88,12 @@ public sealed class ShippingQuoteTests
     public async Task Changed_cart_or_destination_cannot_reuse_a_cheaper_quote()
     {
         await using var s = await Store.CreateAsync();
-        var quote = await s.Shipping.QuoteAsync(s.Customer.Id, new("Exact destination"));
+        var quote = await s.Shipping.QuoteAsync(s.Customer.Id, new("42 Test Street", 1000001, "Hồ Chí Minh", 1003580, "Phường Thủ Đức"));
         var service = new CommerceService(s.Db);
         var wrongAddress = new CheckoutRequest { ShippingAddress = "Other destination", ShippingQuoteId = quote.Id, IdempotencyKey = "wrong-address" };
         Assert.Equal(409, (await Assert.ThrowsAsync<BusinessException>(() => service.CheckoutAsync(s.Customer.Id, wrongAddress))).StatusCode);
         var cart = await s.Db.ShoppingCartItems.SingleAsync(); cart.Quantity = 3; await s.Db.SaveChangesAsync();
-        var changed = new CheckoutRequest { ShippingAddress = "Exact destination", ShippingQuoteId = quote.Id, IdempotencyKey = "changed-cart" };
+        var changed = new CheckoutRequest { ShippingAddress = quote.Destination, ShippingQuoteId = quote.Id, IdempotencyKey = "changed-cart" };
         Assert.Equal(409, (await Assert.ThrowsAsync<BusinessException>(() => service.CheckoutAsync(s.Customer.Id, changed))).StatusCode);
         Assert.Empty(await s.Db.Orders.ToListAsync()); Assert.Equal(10, (await s.Db.Inventories.SingleAsync()).QuantityAvailable);
     }

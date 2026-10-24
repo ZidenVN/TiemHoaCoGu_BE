@@ -13,11 +13,11 @@ Các số liệu trong phần dưới là acceptance lịch sử. Branch sandbox
 
 ## Sandbox follow-up — kiểm tra local
 
-Đã thêm MoMo sandbox payment/refund/query/IPN; Admin reconciliation tự query MoMo lần nữa trước khi ghi sổ và bỏ qua mã/evidence từ client. Twilio test transport bỏ URL/token khôi phục khỏi SMS body; Mailtrap chỉ bật đúng Email Sandbox; notification `Unknown` có Admin reconciliation/audit. Carrier mặc định `Disabled` vì GHN adapter và address mapping sau thay đổi địa giới 2025 chưa được xác minh.
+Đã thêm MoMo sandbox payment/refund/query/IPN; Admin reconciliation tự query MoMo lần nữa trước khi ghi sổ và bỏ qua mã/evidence từ client. Twilio test transport bỏ URL/token khôi phục khỏi SMS body; Mailtrap chỉ bật đúng Email Sandbox; notification `Unknown` có Admin reconciliation/audit. GHN v3 province/ward catalog đã được tích hợp read-only với fixed staging host và fail-closed config; fee adapter vẫn `Disabled` vì không có mapping chính thức từ tỉnh/phường mới sang district/ward legacy.
 
-Lượt mới nhất: `dotnet test HoaSap.sln -c Release` đạt **205 passed, 12 skipped, 0 failed**. 12 test SQL Server không chạy vì lượt này không có `HOASAP_TEST_SQLSERVER`; chúng không được coi là đạt. Frontend lint, typecheck, **32/32 unit tests**, Prettier và production build đạt; preview E2E **30/30** đạt trong lượt trước. Mọi provider HTTP trong test bị fake handler chặn; chưa có MoMo/Mailtrap/Twilio credentials và chưa gọi API provider.
+Lượt mới nhất: `dotnet test HoaSap.sln -c Release` đạt **211 passed, 12 skipped, 0 failed**. 12 test SQL Server bị skip vì sandbox này không có `HOASAP_TEST_SQLSERVER`; không tính là đạt. FE lint, typecheck, **32/32 unit tests**, Prettier, production build và preview E2E **30/30** đều đạt. Test không gọi payment, email hoặc SMS provider; Mailtrap Email Sandbox đã nhận một email `.test` tổng hợp ở lần smoke test trước. GHN staging catalog chỉ đọc được xác minh, nhưng báo phí/vận đơn vẫn khóa do chưa có mapping chính thức cho địa giới mới. MoMo M4B còn bước kinh doanh/pháp lý của chủ tài khoản; Twilio Test Credentials chưa được cấp.
 
-Đây mới là bằng chứng local. GHN staging quote/create/cancel/tracking, SQL Server/volume/key-ring snapshot restore trên staging, migration/rollback rehearsal và k6/load acceptance với ngưỡng được team duyệt vẫn chờ hạ tầng, credentials, fixture và quyết định của owner. Các artifacts local trong `deployment/results/` không phải chứng nhận staging.
+Đây mới là bằng chứng local. GHN fee quote/create/cancel/tracking vẫn bị khóa; SQL Server/volume/key-ring snapshot restore trên staging, migration/rollback rehearsal và k6/load acceptance với ngưỡng được team duyệt vẫn chờ hạ tầng, credentials, fixture và quyết định của owner. Các artifacts local trong `deployment/results/` không phải chứng nhận staging.
 
 ## Kết quả chính
 
@@ -47,4 +47,4 @@ Smoke-load chạy hai process Release dùng chung SQL Server: **1.200/1.200 requ
 
 ## Cần làm trước khi bán thật
 
-Chưa thu/hoàn tiền hoặc gửi email/SMS thật. MoMo có adapter sandbox nhưng chưa có credentials hay provider smoke test; Mailtrap/Twilio test mode cũng chưa được cấu hình. GHN chưa tích hợp và carrier đang bị disable. Cần cấu hình staging tách biệt, secrets sandbox, địa chỉ kho/ID mapping GHN và cân trọng lượng/kích thước thực tế từng SKU; sau đó mới chạy end-to-end, restore rehearsal, migration rollback và load tests theo ngưỡng owner duyệt. Kết quả local không khẳng định CI đã xanh hoặc hệ thống sẵn sàng staging/production. Xem [runbook](operations.md).
+Chưa thu/hoàn tiền hoặc gửi email/SMS thật. MoMo có adapter sandbox nhưng chưa có provider smoke test; Mailtrap/Twilio test mode không được gọi trong lượt xác minh này, và Twilio Test Credentials còn thiếu. GHN province/ward catalog chỉ đọc được; fee adapter và checkout bị disable. Cần mapping phí được GHN xác nhận cùng cân nặng/kích thước thực tế từng SKU; sau đó mới chạy end-to-end, restore rehearsal, migration rollback và load tests theo ngưỡng owner duyệt. Kết quả local không khẳng định CI đã xanh hoặc hệ thống sẵn sàng staging/production. Xem [runbook](operations.md).

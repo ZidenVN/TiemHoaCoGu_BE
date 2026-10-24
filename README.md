@@ -18,7 +18,7 @@ ASP.NET Core 8 · C# · Entity Framework Core 8 · SQL Server / SQLite
 
 Dự án không chỉ dừng ở CRUD: các luồng nghiệp vụ xử lý giữ tồn kho, giữ chỗ có thời hạn, báo giá có phiên bản, thanh toán cọc, giao hàng, hoàn tiền và truy vết thay đổi. Backend được tổ chức theo kiến trúc **N-Layer**, triển khai cùng storefront và Admin CMS mà không cần máy chủ frontend riêng.
 
-> **Trạng thái sandbox:** MoMo payment/refund adapter khóa endpoint ở sandbox; Mailtrap Email Sandbox và Twilio Test Credentials chỉ dùng test mode. Chưa có sandbox secrets nên chưa gọi provider. GHN adapter chưa được xác minh và carrier mặc định `Disabled`, nên chưa có báo giá GHN. Không dùng live credentials, giao dịch thật, tin nhắn thật hoặc production deployment. Xem [runbook vận hành](docs/operations.md).
+> **Trạng thái sandbox:** MoMo payment/refund adapter khóa endpoint ở sandbox; Mailtrap Email Sandbox và Twilio Test Credentials chỉ dùng test mode. GHN staging v3 chỉ đọc danh mục tỉnh/phường; carrier báo phí vẫn `Disabled` do tài liệu phí chưa có mapping được GHN xác nhận từ mô hình địa chỉ mới. Checkout bắt buộc báo giá, không có phí giả. Không dùng live credentials, giao dịch thật, tin nhắn thật hoặc production deployment. Xem [runbook vận hành](docs/operations.md).
 
 ## Điểm nổi bật
 
@@ -52,7 +52,7 @@ Dự án không chỉ dừng ở CRUD: các luồng nghiệp vụ xử lý giữ
 | --- | --- | --- |
 | Tác vụ nền | ASP.NET Core hosted services | Hết hạn đơn, hết hạn giữ chỗ và xử lý outbox trong tiến trình API. |
 | Thông báo | Transactional outbox, Mailtrap Email Sandbox, Twilio Test Credentials | Lưu cùng giao dịch; Mailtrap inbox và Twilio API-acceptance giả lập; không gửi email/SMS thật, kết quả mơ hồ bị cách ly. |
-| Thanh toán & vận chuyển | MoMo sandbox adapter; carrier `Disabled` | MoMo khóa cứng test endpoint, HMAC/IPN và query đối soát; GHN chưa được tích hợp, không bật endpoint generic/live. |
+| Thanh toán & vận chuyển | MoMo sandbox adapter; GHN v3 address catalog read-only; carrier `Disabled` | MoMo khóa cứng test endpoint, HMAC/IPN và query đối soát; GHN fee mapping chưa được xác minh, không bật endpoint generic/live. |
 | Giới hạn lưu lượng | ASP.NET Core Rate Limiting + counter trong database | Luôn có lớp bảo vệ từng process; quota database bật qua `RateLimiting__Distributed=true`, mặc định bật ngoài Development. |
 | Kiểm thử .NET | **xUnit 2.9.2**, ASP.NET Core MVC Testing **8.0.22**, Test SDK **17.11.1** | Kiểm thử nghiệp vụ, HTTP API, phân quyền, migration và tích hợp database. |
 | Kiểm thử bổ trợ | Node.js test runner, Python 3, k6 | Kiểm tra an toàn storefront, xác minh TRX, smoke-load và kịch bản cạnh tranh nhiều process. |
@@ -237,7 +237,7 @@ Hỗ trợ ghi nhận `Cash`/`BankTransfer` sau khi nhân viên kiểm tra tiề
 
 **Không tự gửi lại giao dịch chưa rõ kết quả.** Intent/attempt được lưu bền vững để phục vụ đối soát. Outbox lưu cùng transaction nghiệp vụ, dùng lease và chỉ retry lỗi chắc chắn chưa được nhận; timeout hoặc kết quả mơ hồ chuyển `Unknown` để kiểm tra. Không cam kết exactly-once delivery. Worker chạy trong API, dừng khi API dừng và xử lý các mốc quá hạn khi khởi động lại; đây không phải hàng đợi phân tán độc lập.
 
-Báo giá giao hàng được ràng buộc với tài khoản, giỏ, địa chỉ và thời hạn; server tính trọng lượng từ SKU. Nếu không có báo giá, đơn thường dùng phí mặc định **30.000 VND**; đơn custom dùng giá trọn gói đã duyệt. SKU cũ mặc định **500 gram** để nâng cấp an toàn, cần cân và cập nhật trước khi dùng giá carrier thật. Xem [chi tiết hợp đồng adapter và đối soát](docs/operations.md).
+Báo giá giao hàng được ràng buộc với tài khoản, giỏ, địa chỉ và thời hạn; server tính trọng lượng từ SKU. Đơn thường bắt buộc có quote hợp lệ; nếu GHN chưa thể báo giá, checkout fail-closed và không tạo đơn. Đơn custom dùng giá trọn gói đã duyệt. SKU cũ mặc định **500 gram** để nâng cấp an toàn, cần cân và cập nhật trước khi dùng carrier thật. Xem [chi tiết hợp đồng adapter và đối soát](docs/operations.md).
 
 ## Bảo mật & khả năng quan sát
 

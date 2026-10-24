@@ -22,11 +22,12 @@ public sealed class ProductionRefundTests(ApiFixture fixture) : ApiTestBase(fixt
         (await admin.PutAsync($"/api/management/inventory/{productId}?quantity=1", Json(new { }))).EnsureSuccessStatusCode();
 
         using var customer = await AuthenticatedAsync(await RegisterAsync($"refund-e2e-{Guid.NewGuid():N}@example.test"));
-        var created = await customer.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "QA", items = new[] { new { productId, quantity = 1 } } }));
+        var quote = await ShippingQuoteAsync(customer, "QA", (productId, 1));
+        var created = await customer.PostAsync("/api/orders/checkout", Json(new { shippingAddress = quote.Destination, shippingQuoteId = quote.Id, items = new[] { new { productId, quantity = 1 } } }));
         created.EnsureSuccessStatusCode();
         using var orderJson = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
         var orderId = orderJson.RootElement.GetProperty("id").GetGuid();
-        (await admin.PostAsync($"/api/payments/order/{orderId}", Json(new { transactionCode = "RF-PAY-" + Guid.NewGuid().ToString("N"), paymentMethod = "Cash", amount = 100000m }))).EnsureSuccessStatusCode();
+        (await admin.PostAsync($"/api/payments/order/{orderId}", Json(new { transactionCode = "RF-PAY-" + Guid.NewGuid().ToString("N"), paymentMethod = "Cash", amount = 142000m }))).EnsureSuccessStatusCode();
 
         var first = await admin.PostAsync($"/api/refunds/order/{orderId}", Json(new { amount = 40000m, reason = "Partial QA" }));
         first.EnsureSuccessStatusCode();
@@ -38,7 +39,7 @@ public sealed class ProductionRefundTests(ApiFixture fixture) : ApiTestBase(fixt
         var replay = await admin.PostAsync($"/api/refunds/{firstId}/process", Json(new { transactionCode = "RF-REF-1" }));
         replay.EnsureSuccessStatusCode();
 
-        var second = await admin.PostAsync($"/api/refunds/order/{orderId}", Json(new { amount = 60000m, reason = "Remaining QA" }));
+        var second = await admin.PostAsync($"/api/refunds/order/{orderId}", Json(new { amount = 102000m, reason = "Remaining QA" }));
         second.EnsureSuccessStatusCode();
         using var secondJson = JsonDocument.Parse(await second.Content.ReadAsStringAsync());
         var secondId = secondJson.RootElement.GetProperty("id").GetGuid();

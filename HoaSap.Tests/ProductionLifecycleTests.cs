@@ -35,9 +35,16 @@ public sealed class ProductionLifecycleTests
         (await admin.PutAsync($"/api/management/inventory/{id}?quantity={stock}", Json(new { }))).EnsureSuccessStatusCode(); return id;
     }
     static async Task<Guid> OrderIdAsync(HttpResponseMessage response) { response.EnsureSuccessStatusCode(); using var d = JsonDocument.Parse(await response.Content.ReadAsStringAsync()); return d.RootElement.GetProperty("id").GetGuid(); }
+    static async Task<(Guid Id, string Destination)> ShippingQuoteAsync(HttpClient c, string street, params (Guid ProductId, int Quantity)[] items)
+    {
+        var response = await c.PostAsync("/api/shipping/quote", Json(new { streetAddress = street, provinceId = 1000001, wardId = 1003580, items = items.Select(x => new { productId = x.ProductId, quantity = x.Quantity }).ToArray() }));
+        response.EnsureSuccessStatusCode(); using var d = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return (d.RootElement.GetProperty("id").GetGuid(), d.RootElement.GetProperty("destination").GetString()!);
+    }
     static async Task<(Guid OrderId, Guid ItemId)> OrderAsync(HttpClient customer, Guid product, string? key = null, int quantity = 1)
     {
-        var id = await OrderIdAsync(await customer.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "QA", idempotencyKey = key, items = new[] { new { productId = product, quantity } } })));
+        var quote = await ShippingQuoteAsync(customer, "QA", (product, quantity));
+        var id = await OrderIdAsync(await customer.PostAsync("/api/orders/checkout", Json(new { shippingAddress = quote.Destination, shippingQuoteId = quote.Id, idempotencyKey = key, items = new[] { new { productId = product, quantity } } })));
         using var d = JsonDocument.Parse(await (await customer.GetAsync($"/api/orders/{id}")).Content.ReadAsStringAsync()); return (id, d.RootElement.GetProperty("items")[0].GetProperty("id").GetGuid());
     }
 
@@ -45,22 +52,23 @@ public sealed class ProductionLifecycleTests
     public async Task CheckoutReplay_IsSameOrderAndReservationAndChangedPayloadConflicts()
     {
         var (f, admin) = await StartAsync(); using (f) using (admin) { var p = await ProductAsync(admin, 2); using var c = await UserAsync(f); const string key = "checkout-replay";
-            var first = await c.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "A", idempotencyKey = key, items = new[] { new { productId = p, quantity = 1 } } })); var id = await OrderIdAsync(first);
-            var replay = await c.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "A", idempotencyKey = key, items = new[] { new { productId = p, quantity = 1 } } })); Assert.Equal(HttpStatusCode.OK, replay.StatusCode); Assert.Equal(id, await OrderIdAsync(replay));
-            Assert.Equal(HttpStatusCode.Conflict, (await c.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "A", idempotencyKey = key, items = new[] { new { productId = p, quantity = 2 } } }))).StatusCode);
+            var quote = await ShippingQuoteAsync(c, "A", (p, 1));
+            var first = await c.PostAsync("/api/orders/checkout", Json(new { shippingAddress = quote.Destination, shippingQuoteId = quote.Id, idempotencyKey = key, items = new[] { new { productId = p, quantity = 1 } } })); var id = await OrderIdAsync(first);
+            var replay = await c.PostAsync("/api/orders/checkout", Json(new { shippingAddress = quote.Destination, shippingQuoteId = quote.Id, idempotencyKey = key, items = new[] { new { productId = p, quantity = 1 } } })); Assert.Equal(HttpStatusCode.OK, replay.StatusCode); Assert.Equal(id, await OrderIdAsync(replay));
+            Assert.Equal(HttpStatusCode.Conflict, (await c.PostAsync("/api/orders/checkout", Json(new { shippingAddress = quote.Destination, shippingQuoteId = quote.Id, idempotencyKey = key, items = new[] { new { productId = p, quantity = 2 } } }))).StatusCode);
             using var s = f.Services.CreateScope(); var db = s.ServiceProvider.GetRequiredService<HoaSapDbContext>(); var inv = await db.Inventories.SingleAsync(x => x.ProductId == p); Assert.Equal(1, inv.QuantityAvailable); Assert.Equal(1, inv.QuantityReserved);
         }
     }
 
     [Fact]
-    public async Task AuthenticatedAndGuestKeysAreUniqueAndGuestChangedPayloadConflicts()
+    public async Task AuthenticatedKeysAreIsolatedAndGuestCheckoutRequiresAnAuthenticatedShippingQuote()
     {
         var (f, admin) = await StartAsync(); using (f) using (admin) { var p = await ProductAsync(admin, 5); using var a = await UserAsync(f); using var b = await UserAsync(f); const string key = "shared-key";
-            Assert.Equal(HttpStatusCode.OK, (await a.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "A", idempotencyKey = key, items = new[] { new { productId = p, quantity = 1 } } }))).StatusCode);
-            Assert.Equal(HttpStatusCode.OK, (await b.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "B", idempotencyKey = key, items = new[] { new { productId = p, quantity = 1 } } }))).StatusCode);
+            var quoteA = await ShippingQuoteAsync(a, "A", (p, 1)); var quoteB = await ShippingQuoteAsync(b, "B", (p, 1));
+            Assert.Equal(HttpStatusCode.OK, (await a.PostAsync("/api/orders/checkout", Json(new { shippingAddress = quoteA.Destination, shippingQuoteId = quoteA.Id, idempotencyKey = key, items = new[] { new { productId = p, quantity = 1 } } }))).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await b.PostAsync("/api/orders/checkout", Json(new { shippingAddress = quoteB.Destination, shippingQuoteId = quoteB.Id, idempotencyKey = key, items = new[] { new { productId = p, quantity = 1 } } }))).StatusCode);
             var guest = f.CreateClient(); var body = new { shippingAddress = "G", receiverName = "Guest", receiverPhone = "0901234567", idempotencyKey = "guest-key", items = new[] { new { productId = p, quantity = 1 } } };
-            Assert.Equal(HttpStatusCode.OK, (await guest.PostAsync("/api/orders/checkout", Json(body))).StatusCode);
-            Assert.Equal(HttpStatusCode.Conflict, (await guest.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "Other", receiverName = "Guest", receiverPhone = "0901234567", idempotencyKey = "guest-key", items = new[] { new { productId = p, quantity = 1 } } }))).StatusCode);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, (await guest.PostAsync("/api/orders/checkout", Json(body))).StatusCode);
         }
     }
 
@@ -68,8 +76,9 @@ public sealed class ProductionLifecycleTests
     public async Task CartCheckoutReplayWorksAfterCartSnapshotDeletion()
     {
         var (f, admin) = await StartAsync(); using (f) using (admin) { var p = await ProductAsync(admin, 2); using var c = await UserAsync(f); Assert.Equal(HttpStatusCode.NoContent, (await c.PostAsync("/api/cart", Json(new { productId = p, quantity = 1 }))).StatusCode); const string key = "cart-replay";
-            var first = await c.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "A", idempotencyKey = key, items = Array.Empty<object>() })); var id = await OrderIdAsync(first); using (var cartDoc = JsonDocument.Parse(await (await c.GetAsync("/api/cart")).Content.ReadAsStringAsync())) Assert.Empty(cartDoc.RootElement.EnumerateArray());
-            var replay = await c.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "A", idempotencyKey = key, items = Array.Empty<object>() })); Assert.Equal(HttpStatusCode.OK, replay.StatusCode); Assert.Equal(id, await OrderIdAsync(replay));
+            var quote = await ShippingQuoteAsync(c, "A");
+            var first = await c.PostAsync("/api/orders/checkout", Json(new { shippingAddress = quote.Destination, shippingQuoteId = quote.Id, idempotencyKey = key, items = Array.Empty<object>() })); var id = await OrderIdAsync(first); using (var cartDoc = JsonDocument.Parse(await (await c.GetAsync("/api/cart")).Content.ReadAsStringAsync())) Assert.Empty(cartDoc.RootElement.EnumerateArray());
+            var replay = await c.PostAsync("/api/orders/checkout", Json(new { shippingAddress = quote.Destination, shippingQuoteId = quote.Id, idempotencyKey = key, items = Array.Empty<object>() })); Assert.Equal(HttpStatusCode.OK, replay.StatusCode); Assert.Equal(id, await OrderIdAsync(replay));
         }
     }
 
@@ -82,7 +91,7 @@ public sealed class ProductionLifecycleTests
             Assert.Equal(HttpStatusCode.Conflict, (await admin.PostAsync($"/api/orders/{order}/deliveries/{did}/status", Json(new { status = "Completed" }))).StatusCode);
             Assert.Equal(HttpStatusCode.NotFound, (await other.GetAsync($"/api/orders/{order}/deliveries")).StatusCode);
             Assert.Equal(HttpStatusCode.NotFound, (await c.GetAsync($"/api/orders/{Guid.NewGuid()}/deliveries")).StatusCode);
-            Assert.Equal(HttpStatusCode.OK, (await admin.PostAsync($"/api/payments/order/{order}", Json(new { transactionCode = "PAY-" + Guid.NewGuid(), paymentMethod = "Cash", amount = 130000m }))).StatusCode);
+            Assert.Equal(HttpStatusCode.OK, (await admin.PostAsync($"/api/payments/order/{order}", Json(new { transactionCode = "PAY-" + Guid.NewGuid(), paymentMethod = "Cash", amount = 142000m }))).StatusCode);
             Assert.Equal(HttpStatusCode.NoContent, (await admin.PostAsync($"/api/orders/{order}/status", Json(new { status = "Delivering" }))).StatusCode);
             Assert.Equal(HttpStatusCode.Conflict, (await admin.PostAsync($"/api/orders/{order}/status", Json(new { status = "Completed" }))).StatusCode);
             foreach (var status in new[] { "Shipped", "Delivered" }) Assert.Equal(HttpStatusCode.OK, (await admin.PostAsync($"/api/orders/{order}/deliveries/{did}/status", Json(new { status }))).StatusCode);
@@ -115,7 +124,8 @@ public sealed class ProductionLifecycleTests
     public async Task ParallelLastStockCheckoutHasAtMostOneSuccess()
     {
         var (f, admin) = await StartAsync(); using (f) using (admin) { var p = await ProductAsync(admin, 1); using var a = await UserAsync(f); using var b = await UserAsync(f);
-            var requests = new[] { (a, "race-a"), (b, "race-b") }.Select(x => x.Item1.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "A", idempotencyKey = x.Item2, items = new[] { new { productId = p, quantity = 1 } } }))).ToArray(); var results = await Task.WhenAll(requests); Assert.Equal(1, results.Count(x => x.IsSuccessStatusCode)); Assert.True(results.All(x => x.IsSuccessStatusCode || x.StatusCode == HttpStatusCode.Conflict));
+            var quoteA = await ShippingQuoteAsync(a, "A", (p, 1)); var quoteB = await ShippingQuoteAsync(b, "A", (p, 1));
+            var requests = new[] { (a, "race-a", quoteA), (b, "race-b", quoteB) }.Select(x => x.Item1.PostAsync("/api/orders/checkout", Json(new { shippingAddress = x.Item3.Destination, shippingQuoteId = x.Item3.Id, idempotencyKey = x.Item2, items = new[] { new { productId = p, quantity = 1 } } }))).ToArray(); var results = await Task.WhenAll(requests); Assert.Equal(1, results.Count(x => x.IsSuccessStatusCode)); Assert.True(results.All(x => x.IsSuccessStatusCode || x.StatusCode == HttpStatusCode.Conflict));
             using var scope = f.Services.CreateScope(); var stock = await scope.ServiceProvider.GetRequiredService<HoaSapDbContext>().Inventories.SingleAsync(x => x.ProductId == p); Assert.Equal(0, stock.QuantityAvailable); Assert.Equal(1, stock.QuantityReserved);
         }
     }

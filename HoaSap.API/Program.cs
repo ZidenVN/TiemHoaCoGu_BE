@@ -46,6 +46,10 @@ var protectionPath = builder.Configuration["DataProtection:KeyPath"];
 if (!string.IsNullOrWhiteSpace(protectionPath)) dataProtection.PersistKeysToFileSystem(new DirectoryInfo(Path.GetFullPath(protectionPath)));
 builder.Services.Configure<NotificationOptions>(builder.Configuration.GetSection("Notifications"));
 builder.Services.AddHttpClient("notifications");
+builder.Services.Configure<GhnStagingOptions>(builder.Configuration.GetSection("Shipping:GhnStaging"));
+builder.Services.AddHttpClient<GhnStagingAddressCatalog>(client => client.Timeout = TimeSpan.FromSeconds(10))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddScoped<IGhnStagingAddressCatalog>(sp => sp.GetRequiredService<GhnStagingAddressCatalog>());
 builder.Services.AddSingleton<INotificationTransport, SmtpNotificationTransport>();
 builder.Services.AddSingleton<INotificationTransport, TwilioSmsNotificationTransport>();
 builder.Services.AddScoped<IAuditActor, HttpAuditActor>();

@@ -10,11 +10,6 @@ using Microsoft.EntityFrameworkCore;
 
 namespace HoaSap.BLL.Commerce;
 
-public static class CommerceRules
-{
-    public const decimal ShippingFee = 30000m;
-}
-
 public sealed record PageResult<T>(IReadOnlyList<T> Items, int Page, int PageSize, int Total);
 public sealed record ProductDto(Guid Id, Guid CategoryId, string Code, string Name, decimal Price, decimal? OriginalPrice, string? ThumbnailUrl, string? Description, string? Badge, string? Section, bool IsCustomizable, bool IsPreOrder, bool IsActive, int QuantityAvailable);
 public sealed record CartLineDto(Guid Id, Guid ProductId, string ProductName, int Quantity, decimal UnitPrice, decimal LineTotal, string? CustomNote, string? ReferenceImageUrl);
@@ -172,17 +167,14 @@ public sealed class CommerceService(HoaSapDbContext db)
             lines = (await db.ShoppingCartItems.AsNoTracking().Where(x => x.CustomerId == id).ToListAsync(ct)).Select(x => new Line(x.ProductId, x.Quantity, x.CustomNote, x.ReferenceImageUrl)).ToList();
         if (lines.Count == 0) throw Bad("Giỏ hàng trống");
         if (lines.Any(x => x.Quantity < 1 || x.Quantity > 1000)) throw Bad("Số lượng không hợp lệ");
+        if (request.ShippingQuoteId is null) throw new BusinessException(503, "Chưa có báo giá vận chuyển hợp lệ; không thể tạo đơn.");
 
         await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
-        ShippingQuote? shippingQuote = null;
-        var shippingFee = CommerceRules.ShippingFee;
-        if (request.ShippingQuoteId is { } quoteId)
-        {
-            if (customerId is null) throw Bad("Báo giá vận chuyển yêu cầu đăng nhập");
-            shippingQuote = await db.ShippingQuotes.SingleOrDefaultAsync(x => x.Id == quoteId, ct) ?? throw Bad("Báo giá vận chuyển không hợp lệ");
-            if (shippingQuote.CustomerId != customerId.Value || shippingQuote.Destination != request.ShippingAddress.Trim() || shippingQuote.ExpiresAt <= DateTime.UtcNow || shippingQuote.UsedAt is not null || shippingQuote.OrderId is not null) throw Conflict("Báo giá vận chuyển không hợp lệ hoặc đã hết hạn");
-            shippingFee = shippingQuote.Amount;
-        }
+        if (customerId is null) throw Bad("Báo giá vận chuyển yêu cầu đăng nhập");
+        var quoteId = request.ShippingQuoteId.Value;
+        var shippingQuote = await db.ShippingQuotes.SingleOrDefaultAsync(x => x.Id == quoteId, ct) ?? throw Bad("Báo giá vận chuyển không hợp lệ");
+        if (shippingQuote.CustomerId != customerId.Value || shippingQuote.Destination != request.ShippingAddress.Trim() || shippingQuote.ExpiresAt <= DateTime.UtcNow || shippingQuote.UsedAt is not null || shippingQuote.OrderId is not null) throw Conflict("Báo giá vận chuyển không hợp lệ hoặc đã hết hạn");
+        var shippingFee = shippingQuote.Amount;
         // Re-check inside the serializable transaction to close the race between pre-check and insert.
         if (key is not null)
         {
@@ -196,7 +188,7 @@ public sealed class CommerceService(HoaSapDbContext db)
         }
         var products = await db.Products.Where(p => lines.Select(x => x.ProductId).Contains(p.Id) && p.IsActive).ToDictionaryAsync(p => p.Id, ct);
         if (products.Count != lines.Count) throw Bad("Có sản phẩm không còn bán");
-        if (shippingQuote is not null && shippingQuote.CartFingerprint != ShippingQuoteService.Fingerprint(lines.Select(x => (x.ProductId, x.Quantity, products[x.ProductId].ShippingWeightGrams)))) throw Conflict("Giỏ hàng hoặc trọng lượng đã thay đổi, cần lấy lại báo giá vận chuyển");
+        if (shippingQuote.CartFingerprint != ShippingQuoteService.Fingerprint(lines.Select(x => (x.ProductId, x.Quantity, products[x.ProductId].ShippingWeightGrams)))) throw Conflict("Giỏ hàng hoặc trọng lượng đã thay đổi, cần lấy lại báo giá vận chuyển");
         decimal subtotal = 0;
         foreach (var line in lines)
         {
@@ -231,7 +223,7 @@ public sealed class CommerceService(HoaSapDbContext db)
         var address = $"ReceiverName: {(request.ReceiverName ?? customer?.FullName ?? "")}; ReceiverPhone: {(request.ReceiverPhone ?? customer?.PhoneNumber ?? "")}; ReceiverEmail: {(request.ReceiverEmail ?? customer?.Email ?? "")}; Address: {request.ShippingAddress.Trim()}";
         var order = new Order { Id = Guid.NewGuid(), CustomerId = customerId, IdempotencyKey = key, RequestFingerprint = fingerprint, VoucherId = voucher?.Id, OrderCode = $"ORD-{DateTime.UtcNow:yyyyMMdd}-{Guid.NewGuid():N}", SubTotal = subtotal, DiscountAmount = discount, ShippingFee = shippingFee, TotalAmount = subtotal - discount + shippingFee, ShippingQuoteId = shippingQuote?.Id, OrderStatus = "Confirmed", PaymentStatus = "Unpaid", ShippingAddress = address, Note = request.Note ?? "", CreatedAt = DateTime.UtcNow };
         foreach (var line in lines) { var product = products[line.ProductId]; order.Items.Add(new OrderItem { Id = Guid.NewGuid(), OrderId = order.Id, ProductId = product.Id, Quantity = line.Quantity, UnitPrice = product.Price, FinalPrice = product.Price, CustomNote = line.Note ?? "", ReferenceImageUrl = line.Image ?? "" }); }
-        if (shippingQuote is not null) { shippingQuote.UsedAt = DateTime.UtcNow; shippingQuote.OrderId = order.Id; }
+        shippingQuote.UsedAt = DateTime.UtcNow; shippingQuote.OrderId = order.Id;
         db.Orders.Add(order);
         if (customerId is { } ownerId) db.ShoppingCartItems.RemoveRange(await db.ShoppingCartItems.Where(x => x.CustomerId == ownerId && lines.Select(z => z.ProductId).Contains(x.ProductId)).ToListAsync(ct));
         try { await db.SaveChangesAsync(ct); await transaction.CommitAsync(ct); }

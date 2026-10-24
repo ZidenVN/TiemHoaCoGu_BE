@@ -2,9 +2,9 @@
 
 ## Trước khi bán hàng thật
 
-Bản mở rộng có storefront `/shop/`, CMS `/admin/`, quy trình hoa đặt riêng và sổ thanh toán/hoàn tiền. MoMo adapter chỉ gọi endpoint sandbox cố định; Mailtrap Email Sandbox và Twilio Test Credentials bị khóa test-only. Không có live credentials, giao dịch thật, SMS thật hay production deployment. **GHN staging chưa được nối**: carrier mặc định `Disabled`, và runtime từ chối generic/live carrier ở mọi environment ngoài bộ test. Không chỉ điền URL của một nhà cung cấp rồi coi như tích hợp xong.
+Bản mở rộng có storefront `/shop/`, CMS `/admin/`, quy trình hoa đặt riêng và sổ thanh toán/hoàn tiền. MoMo adapter chỉ gọi endpoint sandbox cố định; Mailtrap Email Sandbox và Twilio Test Credentials bị khóa test-only. Không có giao dịch thật, SMS thật hay production deployment. GHN staging v3 address catalog đã được nối read-only; fee adapter mặc định `Disabled` vì GHN chưa công bố mapping báo phí có thể xác minh cho tỉnh/phường mới. Runtime từ chối generic/live carrier ngoài bộ test; không điền URL tùy ý rồi coi như tích hợp xong.
 
-Chỉ tiếp tục sau khi có sandbox/staging tách biệt: MoMo sandbox PartnerCode/AccessKey/SecretKey, IPN URL HTTPS công khai và return origin; GHN staging Token/ShopId, địa chỉ kho và ánh xạ location được GHN xác nhận; Mailtrap sandbox SMTP username/password; Twilio Test SID/Auth Token. Phải xác nhận trọng lượng và kích thước đóng gói thực tế từng SKU. Staging host/database, secrets manager, backup destination, ngưỡng tải/latency và dữ liệu seed tổng hợp vẫn cần chủ sở hữu cung cấp. Tuyệt đối không dùng production/live credentials hay gửi giao dịch/tin nhắn thật.
+Trạng thái hiện tại: MoMo M4B onboarding còn phụ thuộc bước kinh doanh/pháp lý của chủ tài khoản; không gửi attestation thay chủ. GHN staging Token/ShopId và địa chỉ kho đã có, secrets nằm ngoài repository; phí vẫn cần mapping chính thức cho địa bàn mới và số cân/kích thước kiện thực tế của từng SKU. Mailtrap Email Sandbox đã được cấu hình riêng và nhận một email tổng hợp `.test`; Twilio Test Credentials chưa được cấp cho tài khoản hiện tại, không thay bằng trial/live SMS. Staging SQL Server, secrets manager/backup destination, ngưỡng tải/latency và dữ liệu seed tổng hợp vẫn cần hạ tầng/owner cung cấp. Tuyệt đối không dùng production/live credentials hay gửi giao dịch/tin nhắn thật.
 
 ## Thanh toán và hoàn tiền
 
@@ -29,15 +29,17 @@ Hoàn đơn: nhân viên tạo `/api/refunds/order/{orderId}`, Admin duyệt `/a
 
 ## Vận chuyển
 
-GHN staging chưa có adapter được xác minh. Cấu hình mặc định `Shipping:Carrier:Provider=Disabled`; quote API fail-closed, còn runtime chỉ cho phép carrier `Disabled` (ngoài test). Không bật generic signed adapter để giả làm GHN hoặc trỏ tới live API. Trước khi triển khai cần staging Token/ShopId, địa chỉ kho, SKU dimensions/weights, và xác nhận GHN hỗ trợ cách tính phí sau thay đổi địa giới 2025: endpoint fee hiện đòi district/ward ID cũ, trong khi selector mới trả province/ward; không tự suy đoán mapping.
+GHN staging đã được nối **chỉ đọc** cho danh mục tỉnh/phường mới qua v3; token/shop ID chỉ nằm trong cấu hình môi trường, host được khóa cứng vào `dev-online-gateway.ghn.vn`. Fee adapter vẫn chưa thể bật: tài liệu `Calculate Fee` và `Get Service` còn yêu cầu district ID + ward code kiểu cũ, trong khi danh mục mới chỉ trả province/ward ID. Tài liệu `Create Order` có `is_new_to_address=true`, nhưng không định nghĩa mapping cho endpoint báo phí; không tự suy đoán mã. Cấu hình mặc định `Shipping:Carrier:Provider=Disabled`; không bật generic signed adapter hay production endpoint.
 
 ```text
 Shipping__Carrier__Provider=Disabled
+Shipping__GhnStaging__Token=<GHN staging token, secret manager/environment only>
+Shipping__GhnStaging__ShopId=<GHN staging shop ID>
 ```
 
-`POST /api/shipping/quote` nhận `destination` và tùy chọn `items`; bỏ `items` để dùng giỏ của tài khoản. API tính kg từ `Product.ShippingWeightGrams × quantity`, không tin `weight` hay phí do khách gửi. Báo giá gắn chủ tài khoản, địa chỉ, fingerprint giỏ/trọng lượng, thời hạn và đơn sử dụng. Checkout truyền `shippingQuoteId`, không truyền tổng phí. Đổi SKU/số lượng/trọng lượng/địa chỉ phải lấy báo giá mới. Một báo giá không tạo được hai đơn khác nhau; checkout replay hợp lệ vẫn trả đúng đơn cũ.
+`GET /api/shipping/locations/provinces` và `GET /api/shipping/locations/wards?provinceId=...` yêu cầu đăng nhập và chỉ proxy danh mục staging v3; không có API đặt đơn hoặc gọi phí trong client này. `POST /api/shipping/quote` nhận street address, province ID, ward ID và tùy chọn `items`; server đối chiếu tỉnh/phường cùng quan hệ cha-con với danh mục GHN hiện tại, rồi tự dựng tên địa chỉ chuẩn. Bỏ `items` để dùng giỏ tài khoản. API tính kg từ `Product.ShippingWeightGrams × quantity`, không tin `weight` hay phí do khách gửi. Quote gắn chủ tài khoản, địa chỉ, fingerprint giỏ/trọng lượng, thời hạn và đơn sử dụng. Checkout bắt buộc `shippingQuoteId` còn hạn, đúng địa chỉ/giỏ; thiếu quote trả 503 và không tạo đơn. Đổi SKU/số lượng/trọng lượng/địa chỉ phải lấy báo giá mới. Một quote không tạo được hai đơn khác nhau; checkout replay hợp lệ vẫn trả đúng đơn cũ.
 
-**Giá trị 500 gram là mặc định để nâng cấp SKU cũ an toàn, không phải số cân thực tế.** Admin phải cân và nhập trọng lượng đóng gói thực tế, cùng kích thước kiện cần có cho GHN. Carrier `Disabled` khiến FE checkout không thể lấy quote, nên không thể hoàn tất checkout qua storefront trong trạng thái sandbox hiện tại. Một đường API legacy có thể còn áp dụng phí cố định 30.000 VND khi không truyền quote; đó không phải báo giá provider và không được dùng làm bằng chứng đã tích hợp GHN. Tạo vận đơn, mua nhãn và cập nhật tracking tự động cũng chưa được triển khai.
+**Giá trị 500 gram là mặc định nâng cấp SKU cũ, không phải số cân thực tế.** Admin phải cân và nhập trọng lượng đóng gói thực tế cùng kích thước kiện cần cho GHN. Carrier `Disabled` khiến FE checkout không lấy được quote; checkout API cũng từ chối đơn không có quote, không còn phí mặc định 30.000 VND. Vì vậy storefront chưa thể hoàn tất đơn trong sandbox hiện tại. Tạo vận đơn, mua nhãn và cập nhật tracking tự động cũng chưa được triển khai.
 
 ## Hết hạn và voucher
 

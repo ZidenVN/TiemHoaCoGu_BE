@@ -8,6 +8,24 @@ namespace HoaSap.Tests;
 public sealed class CommerceTests(ApiFixture fixture) : ApiTestBase(fixture)
 {
     [Fact]
+    public async Task GhnDirectoryRequiresAuthenticationAndQuoteRejectsWardOutsideSelectedProvince()
+    {
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Client.GetAsync("/api/shipping/locations/provinces")).StatusCode);
+        using var customer = await AuthenticatedAsync(await RegisterAsync($"shipping-catalog-{Guid.NewGuid():N}@example.test"));
+        using var provinces = JsonDocument.Parse(await (await customer.GetAsync("/api/shipping/locations/provinces")).Content.ReadAsStringAsync());
+        Assert.Equal("Hồ Chí Minh", provinces.RootElement[0].GetProperty("name").GetString());
+        using var wards = JsonDocument.Parse(await (await customer.GetAsync("/api/shipping/locations/wards?provinceId=1000001")).Content.ReadAsStringAsync());
+        Assert.Equal("Phường Thủ Đức", wards.RootElement[0].GetProperty("name").GetString());
+
+        var invalidQuote = await customer.PostAsync("/api/shipping/quote", Json(new
+        {
+            streetAddress = "QA street", provinceId = 1000001, wardId = 1003581,
+            items = Array.Empty<object>()
+        }));
+        Assert.Equal(HttpStatusCode.BadRequest, invalidQuote.StatusCode);
+    }
+
+    [Fact]
     public async Task CatalogList_ReportsTheSameAvailableStockAsProductDetail()
     {
         var admin = await AuthenticatedAsync(await AdminTokenAsync());
@@ -58,7 +76,7 @@ public sealed class CommerceTests(ApiFixture fixture) : ApiTestBase(fixture)
     }
 
     [Fact]
-    public async Task Checkout_UsesServerProductPriceAndServerShipping()
+    public async Task CheckoutWithoutShippingQuote_FailsClosedAndDoesNotReserveStock()
     {
         var admin = await AuthenticatedAsync(await AdminTokenAsync());
         var categoryResponse = await admin.PostAsync("/api/management/categories", Json(new { code = "QA-CAT-" + Guid.NewGuid().ToString("N")[..8], name = "QA Flowers" }));
@@ -73,16 +91,13 @@ public sealed class CommerceTests(ApiFixture fixture) : ApiTestBase(fixture)
 
         var customer = await AuthenticatedAsync(await RegisterAsync($"checkout-{Guid.NewGuid():N}@example.test", "093" + Random.Shared.Next(1000000, 9999999)));
         var order = await customer.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "QA address", items = new[] { new { productId, quantity = 1, unitPrice = 1m } } }));
-        order.EnsureSuccessStatusCode();
-        using var body = JsonDocument.Parse(await order.Content.ReadAsStringAsync());
-        Assert.Equal(125000m, body.RootElement.GetProperty("subTotal").GetDecimal());
-        Assert.Equal(30000m, body.RootElement.GetProperty("shippingFee").GetDecimal());
-        Assert.Equal(155000m, body.RootElement.GetProperty("totalAmount").GetDecimal());
-        Assert.Equal(125000m, body.RootElement.GetProperty("items")[0].GetProperty("unitPrice").GetDecimal());
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, order.StatusCode);
+        using var detail = JsonDocument.Parse(await (await Client.GetAsync($"/api/catalog/products/{productId}")).Content.ReadAsStringAsync());
+        Assert.Equal(3, detail.RootElement.GetProperty("quantityAvailable").GetInt32());
     }
 
     [Fact]
-    public async Task Checkout_InsufficientStockDoesNotReserveInventory()
+    public async Task CheckoutWithoutQuoteCannotBeUsedToBypassShippingReadinessOrReserveStock()
     {
         var admin = await AuthenticatedAsync(await AdminTokenAsync());
         var categoryResponse = await admin.PostAsync("/api/management/categories", Json(new { code = "QA-CAT-" + Guid.NewGuid().ToString("N")[..8], name = "QA Flowers" }));
@@ -97,9 +112,10 @@ public sealed class CommerceTests(ApiFixture fixture) : ApiTestBase(fixture)
         var customer = await AuthenticatedAsync(await RegisterAsync($"stock-{Guid.NewGuid():N}@example.test", "094" + Random.Shared.Next(1000000, 9999999)));
         var line = new[] { new { productId, quantity = 2 } };
         var rejected = await customer.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "QA", items = line }));
-        Assert.Equal(HttpStatusCode.Conflict, rejected.StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, rejected.StatusCode);
         var succeedsAfterFailedAttempt = await customer.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "QA", items = new[] { new { productId, quantity = 1 } } }));
-        Assert.NotEqual(HttpStatusCode.Conflict, succeedsAfterFailedAttempt.StatusCode);
-        succeedsAfterFailedAttempt.EnsureSuccessStatusCode();
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, succeedsAfterFailedAttempt.StatusCode);
+        using var detail = JsonDocument.Parse(await (await Client.GetAsync($"/api/catalog/products/{productId}")).Content.ReadAsStringAsync());
+        Assert.Equal(1, detail.RootElement.GetProperty("quantityAvailable").GetInt32());
     }
 }
