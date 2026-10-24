@@ -2,44 +2,48 @@
 
 ## Trước khi bán hàng thật
 
-Bản mở rộng có storefront `/shop/`, CMS `/admin/`, quy trình hoa đặt riêng, sổ thanh toán/hoàn tiền và các adapter có kiểm thử. **Chưa có kết nối thật tới VNPay, MoMo, ngân hàng, GHN/GHTK hoặc nhà cung cấp SMS nào.** Adapter hiện tại là hợp đồng HTTPS/HMAC tổng quát: cần một dịch vụ tương thích hoặc triển khai `IPaymentGateway`/`ICarrierAdapter` cho nhà cung cấp đã chọn. Không chỉ điền URL của một nhà cung cấp bất kỳ rồi coi như tích hợp xong.
+Bản mở rộng có storefront `/shop/`, CMS `/admin/`, quy trình hoa đặt riêng và sổ thanh toán/hoàn tiền. MoMo adapter chỉ gọi endpoint sandbox cố định; Mailtrap Email Sandbox và Twilio Test Credentials bị khóa test-only. Không có giao dịch thật, SMS thật hay production deployment. GHN staging v3 address catalog đã được nối read-only; fee adapter mặc định `Disabled` vì GHN chưa công bố mapping báo phí có thể xác minh cho tỉnh/phường mới. Runtime từ chối generic/live carrier ngoài bộ test; không điền URL tùy ý rồi coi như tích hợp xong.
 
-Trước go-live phải cấu hình môi trường staging, callback HTTPS, secrets của nhà cung cấp, SMTP/SMS, trọng lượng đóng gói thực tế của từng SKU, shared storage, backup và kiểm tra giao dịch sandbox đầu-cuối. Không có giao dịch thu/hoàn tiền thật hoặc tin nhắn thật nào được gửi trong QA của bản này.
+Trạng thái hiện tại: MoMo M4B onboarding còn phụ thuộc bước kinh doanh/pháp lý của chủ tài khoản; không gửi attestation thay chủ. GHN staging Token/ShopId và địa chỉ kho đã có, secrets nằm ngoài repository; chưa có mapping phí chính thức cho địa bàn mới và hiện không có SKU nào có đủ cân nặng/kích thước được owner xác nhận. Mailtrap Email Sandbox đã được cấu hình riêng và nhận một email tổng hợp `.test`; Twilio Test Credentials chưa được cấp cho tài khoản hiện tại, không thay bằng trial/live SMS. Staging SQL Server, secrets manager/backup destination, ngưỡng tải/latency và dữ liệu seed tổng hợp vẫn cần hạ tầng/owner cung cấp. Tuyệt đối không dùng production/live credentials hay gửi giao dịch/tin nhắn thật.
 
 ## Thanh toán và hoàn tiền
 
 Cấu hình qua secrets/biến môi trường, không sửa khóa thật vào Git:
 
 ```text
-Payments__Gateway__Endpoint=https://bridge.example.test/payment/
-Payments__Gateway__MerchantId=<merchant>
-Payments__Gateway__Secret=<secret-ngau-nhien>
-Payments__Gateway__TimeoutSeconds=15
-Payments__Gateway__AllowedReturnOrigins__0=https://shop.example.test
+Payments__Gateway__Provider=MomoSandbox
+Payments__Gateway__MomoPartnerCode=<sandbox-partner-code>
+Payments__Gateway__MomoAccessKey=<sandbox-access-key>
+Payments__Gateway__MomoSecretKey=<sandbox-secret-key>
+Payments__Gateway__MomoIpnUrl=https://<staging-api>/api/gateway/webhook
+Payments__Gateway__AllowedReturnOrigins__0=https://<staging-storefront>
 ```
 
-`Endpoint` là URL base của dịch vụ **tương thích hợp đồng trong `CommerceExtensions.cs`**. Adapter gọi `charge`/`refund`, gửi JSON cùng `X-Merchant-Id`, `X-Timestamp` (Unix seconds) và `X-Signature = HMAC-SHA256(secret, timestamp + "." + rawBody)`, chữ hex thường. HTTP redirect không được tự theo. Callback `POST /api/gateway/webhook` dùng chữ ký trên đúng raw body, kiểm tra lệch giờ tối đa 5 phút và chống xử lý lặp. Return URL phải HTTPS và thuộc allowlist; trang return không phải bằng chứng đã nhận tiền.
+Không cấu hình MoMo bằng URL tùy ý: adapter khóa endpoint về `test-payment.momo.vn`, ký request HMAC, kiểm tra chữ ký create response/IPN, và chỉ nhận pay URL trên host sandbox. API query/refund của MoMo không công bố chữ ký response; backend dựa trên TLS và đối chiếu chặt partner/order/request/amount/time. Query phải xác nhận lại ngay trước khi admin ghi sổ; pending/authorized/kết quả không phân loại giữ trạng thái cần đối soát. Return URL phải HTTPS và thuộc allowlist; trang return không phải bằng chứng đã nhận tiền. `GenericSignedGateway` chỉ dành cho unit-test environment; app đang chạy từ chối provider generic/live.
 
 Khách dùng `GET /api/gateway/orders/{id}/balance`, sau đó `POST /api/gateway/orders/{id}/charge` với `{amount,returnUrl,idempotencyKey}`. Lần đầu của đơn custom phải đủ cọc, không vượt số tiền còn lại. Giữ nguyên key khi mạng lỗi. Intent được lưu trước khi gọi nhà cung cấp; timeout thành `Unknown`, **không tự gửi lệnh thu lại**. Khoản `Pending` không tính là tiền đã thu.
 
-Admin xem `GET /api/gateway/reconciliation`; sau khi kiểm tra chứng từ độc lập, ghi `POST /api/gateway/reconciliation/{id}` với `outcome` là `paid` hoặc `not-charged`, `transactionCode` nếu đã thu, và `evidenceReference` là mã ticket/chứng từ không chứa dữ liệu cá nhân. Endpoint chỉ đối soát sổ, không gọi nhà cung cấp. Tiền đến sau khi đơn `Expired`/`Cancelled` không hồi sinh đơn hoặc giữ kho lại; đánh dấu `RefundRequired` và đi qua quy trình hoàn tiền.
+Admin xem `GET /api/gateway/reconciliation`, query giao dịch MoMo, rồi chọn xác nhận trong CMS. Backend tự query MoMo lần nữa trước khi ghi sổ và bỏ qua mã giao dịch/evidence do client gửi; chỉ chấp nhận outcome cuối khớp provider, với MoMo transId số. Không retry lệnh thu khi kết quả còn pending/unknown. Tiền đến sau khi đơn `Expired`/`Cancelled` không hồi sinh đơn hoặc giữ kho lại; đánh dấu `RefundRequired` và đi qua quy trình hoàn tiền.
 
 Hoàn đơn: nhân viên tạo `/api/refunds/order/{orderId}`, Admin duyệt `/api/refunds/{id}/approve`. Admin có thể ghi nhận một khoản hoàn đã thực hiện ngoài hệ thống bằng `/process`, hoặc gọi `/process-gateway` với `originalTransactionCode`. Mỗi refund có attempt bền vững; cùng refund không được chuyển tiền lần hai. Timeout/biên nhận chưa rõ giữ trạng thái chờ đối soát; `/reconcile-gateway` chỉ ghi mã biên nhận đã xác minh, không gửi lại lệnh hoàn. Staff không được duyệt, xử lý hoặc đối soát hoàn đơn/gateway.
 
 ## Vận chuyển
 
+GHN staging đã được nối **chỉ đọc** cho danh mục tỉnh/phường mới qua v3; token/shop ID chỉ nằm trong cấu hình môi trường, host được khóa cứng vào `dev-online-gateway.ghn.vn`. Fee adapter vẫn chưa thể bật: tài liệu `Calculate Fee` và `Get Service` còn yêu cầu district ID + ward code kiểu cũ, trong khi danh mục mới chỉ trả province/ward ID. Tài liệu `Create Order` có `is_new_to_address=true`, nhưng không định nghĩa mapping cho endpoint báo phí; không tự suy đoán mã. Cấu hình mặc định `Shipping:Carrier:Provider=Disabled`; không bật generic signed adapter hay production endpoint.
+
 ```text
-Shipping__Carrier__Endpoint=https://bridge.example.test/shipping/
-Shipping__Carrier__MerchantId=<merchant>
-Shipping__Carrier__Secret=<secret>
-Shipping__Carrier__Origin=<dia-chi-kho>
-Shipping__Carrier__TimeoutSeconds=15
-Shipping__Carrier__QuoteLifetimeMinutes=15
+Shipping__Carrier__Provider=Disabled
+Shipping__GhnStaging__Token=<GHN staging token, secret manager/environment only>
+Shipping__GhnStaging__ShopId=<GHN staging shop ID>
 ```
 
-`POST /api/shipping/quote` nhận `destination` và tùy chọn `items`; bỏ `items` để dùng giỏ của tài khoản. API tính kg từ `Product.ShippingWeightGrams × quantity`, không tin `weight` hay phí do khách gửi. Báo giá gắn chủ tài khoản, địa chỉ, fingerprint giỏ/trọng lượng, thời hạn và đơn sử dụng. Checkout truyền `shippingQuoteId`, không truyền tổng phí. Đổi SKU/số lượng/trọng lượng/địa chỉ phải lấy báo giá mới. Một báo giá không tạo được hai đơn khác nhau; checkout replay hợp lệ vẫn trả đúng đơn cũ.
+`GET /api/shipping/locations/provinces` và `GET /api/shipping/locations/wards?provinceId=...` yêu cầu đăng nhập và chỉ proxy danh mục staging v3; không có API đặt đơn hoặc gọi phí trong client này. `POST /api/shipping/quote` nhận street address, province ID, ward ID và tùy chọn `items`; server đối chiếu tỉnh/phường cùng quan hệ cha-con với danh mục GHN hiện tại, rồi tự dựng tên địa chỉ chuẩn. Bỏ `items` để dùng giỏ tài khoản. Với mọi SKU trong giỏ, quote yêu cầu cân nặng kiện, cả ba kích thước dương và cờ Admin xác nhận; server không tin `weight` hoặc phí do khách gửi. Fingerprint chứa ID SKU, số lượng, cân nặng, kích thước và cờ xác nhận. Checkout kiểm tra lại thông số, quote còn hạn, chủ tài khoản, địa chỉ và fingerprint trước khi giữ kho; thiếu hoặc thay đổi thông số sẽ bị từ chối, không tạo đơn. Hiện GHN vẫn bị khóa vì chưa có mapping phí chính thức từ danh mục tỉnh/phường mới.
 
-**Giá trị 500 gram là mặc định để nâng cấp SKU cũ an toàn, không phải số cân thực tế.** Admin phải cập nhật trọng lượng đóng gói trước khi bật báo giá thật. Không có báo giá thì luồng thường vẫn dùng phí cố định 30.000 VND, được hiển thị rõ trên storefront. Đơn custom dùng giá trọn gói trong báo giá được khách duyệt; không cộng thêm phí ngoài báo giá. Adapter hiện chỉ lấy giá vận chuyển; tạo vận đơn, mua nhãn, cập nhật tracking tự động theo từng hãng chưa được triển khai.
+### Nhập và xác nhận quy cách kiện cho SKU
+
+Trong CMS, mở **Sản phẩm → Sửa**, cân sản phẩm sau khi đã đóng gói như lúc giao khách (gram), đo kích thước ngoài của kiện theo chiều dài/rộng/cao (cm), rồi nhập cả bốn số. Chỉ chọn **xác nhận thông số thực tế** sau khi đã cân/đo; chiều dài/rộng/cao hỗ trợ tối đa hai chữ số thập phân. Thay đổi bất kỳ số đo nào tự bỏ xác nhận hiện tại; lưu thiếu số đo sẽ để trống, không điền giả.
+
+Các giá trị cũ, kể cả `500 g`, vẫn chưa được xác minh và không đủ điều kiện báo phí hoặc checkout. Migration không đánh dấu SKU cũ là đã xác nhận. Bảng sản phẩm Admin hiển thị trạng thái chưa xác nhận. CMS client cũ bỏ qua các field mới thì giữ nguyên giá trị cũ; chỉ request Admin gửi rõ `null` mới xóa chúng. Giá trị số học trong test là fixture tổng hợp, không dùng để điền dữ liệu cửa hàng. Ngay cả sau khi nhập số đo thật, GHN quote vẫn khóa cho tới khi có mapping phí chính thức được xác minh. Không có phí mặc định 30.000 VND; storefront chưa thể tạo đơn. Tạo vận đơn, mua nhãn và cập nhật tracking tự động cũng chưa được triển khai.
 
 ## Hết hạn và voucher
 
@@ -52,22 +56,22 @@ Chính sách lượt voucher: hoàn lại **một lần** khi hủy/hết hạn 
 ```text
 Auth__PasswordResetUrlBase=https://shop.example.test/shop/
 Notifications__EmailEnabled=true
-Notifications__Smtp__Host=<smtp-host>
+Notifications__Smtp__Host=sandbox.smtp.mailtrap.io
 Notifications__Smtp__Port=587
 Notifications__Smtp__EnableSsl=true
-Notifications__Smtp__Username=<username>
-Notifications__Smtp__Password=<secret>
-Notifications__Smtp__From=<sender-email>
-Notifications__SmsEnabled=false
-Notifications__Sms__Endpoint=https://sms-bridge.example.test/send
-Notifications__Sms__ApiKey=<secret>
-Notifications__Sms__Sender=<sender>
+Notifications__Smtp__Username=<mailtrap-sandbox-username>
+Notifications__Smtp__Password=<mailtrap-sandbox-password>
+Notifications__Smtp__From=no-reply@hoasap.test
+Notifications__SmsEnabled=true
+Notifications__Sms__Mode=Test
+Notifications__Sms__TestAccountSid=<twilio-test-account-sid>
+Notifications__Sms__TestAuthToken=<twilio-test-auth-token>
 DataProtection__KeyPath=/srv/hoasap/shared-keys
 ```
 
-SMS dùng HTTPS JSON bridge; không mặc nhiên tương thích API của mọi nhà mạng. Tắt một kênh không đánh dấu thông báo của kênh đó là đã gửi. Outbox lưu cùng giao dịch tạo/đổi đơn và booking, claim nguyên tử bằng lease. Chỉ lỗi chắc chắn chưa nhận mới retry có backoff/giới hạn số lần. Timeout, mất kết nối, SMTP không xác định, phản hồi lỗi của bridge chưa có hợp đồng provider, hoặc lease `Processing` hết hạn sẽ chuyển `Unknown` và **không tự gửi lại**. Có nhắc workshop trước buổi học. SMS dùng `Idempotency-Key` ổn định; email dùng `Message-Id` ổn định nhưng đây không phải bảo đảm provider chống trùng.
+Email chỉ bật khi dùng đúng host Mailtrap Sandbox, thông tin SMTP lấy từ từng sandbox, và `From` dùng miền thử nghiệm `.test`; inbox Mailtrap là nơi kiểm tra nội dung, không gửi tới hộp thư ngoài. SMS chỉ bật ở `Mode=Test`, bằng Test Account SID/Auth Token và `From` cố định `+15005550006`; ứng dụng thay đích đến bằng số thử nghiệm giả lập `+12025550123`, không dùng số của khách. Twilio Test Credentials chỉ giả lập API acceptance, không gửi SMS thật và không phát status callback; nếu tài khoản không có Test Credentials thì giữ SMS tắt, tuyệt đối không thay bằng Live/Trial credentials. Tắt một kênh không đánh dấu thông báo là đã gửi. Outbox claim nguyên tử bằng lease; chỉ lỗi chắc chắn chưa được provider nhận mới retry có giới hạn. Timeout, mất kết nối, phản hồi 408/429/5xx hoặc lease `Processing` hết hạn chuyển `Unknown` và **không tự gửi lại**. Không gửi header idempotency tùy ý cho Twilio và không tuyên bố exactly-once; email dùng `Message-Id` ổn định nhưng cũng không đảm bảo provider chống trùng.
 
-Theo dõi số lượng/tuổi thông báo `Unknown` qua truy vấn outbox vận hành (chưa có màn hình đối soát riêng). Đối soát log/provider bằng message id trước khi quyết định gửi lại; không đổi hàng loạt `Unknown` thành `Pending` hoặc xóa lease để ép retry. Sau khi chứng minh provider chưa nhận, người vận hành mới có thể thực hiện gửi lại có kiểm soát. Chính sách này ưu tiên tránh gửi trùng nhưng có thể giữ lại cả thông báo chưa thực sự được gửi khi process chết trước lúc gọi provider; không hứa exactly-once hay bảo đảm giao tin. Không có thay đổi dữ liệu cũ hoặc tự sửa lịch sử refund trong đợt này.
+Admin xem hàng đợi `Unknown` tại `/api/management/notifications` (qua tab Thông báo trong CMS); API chỉ trả ID, loại sự kiện, kênh và thời điểm, không trả địa chỉ nhận hoặc nội dung. Tra cứu ID ổn định trong log/provider trước khi thao tác. `POST /api/management/notifications/{id}/reconcile` yêu cầu mã bằng chứng không chứa PII và chỉ áp dụng khi trạng thái vẫn là `Unknown`: chọn `accepted` khi provider xác nhận đã tiếp nhận để ghi nhận `Sent` (không khẳng định người nhận đã đọc), hoặc `not-accepted` chỉ khi provider xác nhận chưa nhận; lựa chọn sau chuyển bản tin về `Pending` một lần để worker thử lại nếu kênh đang bật. Mọi thao tác ghi audit và replay trên cùng bản tin bị từ chối. Không đổi hàng loạt trạng thái hoặc xóa lease để ép retry. Chính sách này ưu tiên tránh gửi trùng nhưng có thể giữ lại cả thông báo chưa thực sự được gửi khi process chết trước lúc gọi provider; không hứa exactly-once hay bảo đảm giao tin. Không có thay đổi dữ liệu cũ hoặc tự sửa lịch sử refund.
 
 Quên mật khẩu trả thông điệp chung, không trả token trong API. Token có hạn 30 phút, lưu hash; đường dẫn gửi email được bảo vệ bằng ASP.NET Data Protection. Token reset chỉ dùng một lần, đổi/reset mật khẩu thu hồi refresh token và làm access token cũ mất hiệu lực theo security stamp. Refresh token được lưu hash, xoay vòng theo family; reuse phát hiện sẽ thu hồi cả family. Logout thu hồi family của phiên được cung cấp. Storefront giữ token trong bộ nhớ, không ghi localStorage; tải lại trang cần đăng nhập lại.
 

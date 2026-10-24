@@ -34,9 +34,16 @@ public sealed class HardeningIntegrationTests
     {
         var cat = await admin.PostAsync("/api/management/categories", Json(new { code = "T-" + Guid.NewGuid().ToString("N")[..8], name = "Test" })); cat.EnsureSuccessStatusCode();
         using var cd = JsonDocument.Parse(await cat.Content.ReadAsStringAsync()); var categoryId = cd.RootElement.GetProperty("id").GetGuid();
-        var p = await admin.PostAsync("/api/management/products", Json(new { code = "P-" + Guid.NewGuid().ToString("N")[..8], name = "Test Flower", categoryId, price, isActive = true })); p.EnsureSuccessStatusCode();
+        // Synthetic measurements are test-only and never used by production catalog seeds.
+        var p = await admin.PostAsync("/api/management/products", Json(new { code = "P-" + Guid.NewGuid().ToString("N")[..8], name = "Test Flower", categoryId, price, shippingWeightGrams = 500, packageLengthCm = 30m, packageWidthCm = 20m, packageHeightCm = 10m, packagingSpecsConfirmed = true, isActive = true })); p.EnsureSuccessStatusCode();
         using var pd = JsonDocument.Parse(await p.Content.ReadAsStringAsync()); var id = pd.RootElement.GetProperty("id").GetGuid();
         (await admin.PutAsync($"/api/management/inventory/{id}?quantity={stock}", Json(new { }))).EnsureSuccessStatusCode(); return (id, price);
+    }
+    static async Task<(Guid Id, string Destination)> ShippingQuoteAsync(HttpClient customer, Guid productId, int quantity = 1)
+    {
+        var response = await customer.PostAsync("/api/shipping/quote", Json(new { streetAddress = "QA street", provinceId = 1000001, wardId = 1003580, items = new[] { new { productId, quantity } } }));
+        response.EnsureSuccessStatusCode(); using var d = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return (d.RootElement.GetProperty("id").GetGuid(), d.RootElement.GetProperty("destination").GetString()!);
     }
     static async Task<(Guid WorkshopId, Guid SessionId)> WorkshopAsync(HttpClient admin, int capacity = 2)
     {
@@ -53,7 +60,8 @@ public sealed class HardeningIntegrationTests
         var (f, admin) = await StartAsync(); using (f) using (admin)
         {
             var p = await ProductAsync(admin); using var owner = await CustomerAsync(f); using var other = await CustomerAsync(f);
-            var created = await owner.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "A", items = new[] { new { productId = p.ProductId, quantity = 1 } } })); created.EnsureSuccessStatusCode(); using var d = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+            var quote = await ShippingQuoteAsync(owner, p.ProductId);
+            var created = await owner.PostAsync("/api/orders/checkout", Json(new { shippingAddress = quote.Destination, shippingQuoteId = quote.Id, items = new[] { new { productId = p.ProductId, quantity = 1 } } })); created.EnsureSuccessStatusCode(); using var d = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
             var id = d.RootElement.GetProperty("id").GetGuid(); var response = await other.GetAsync($"/api/orders/{id}"); Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         }
     }
@@ -64,7 +72,8 @@ public sealed class HardeningIntegrationTests
         var (f, admin) = await StartAsync(); using (f) using (admin)
         {
             var p = await ProductAsync(admin, stock: 3); using var customer = await CustomerAsync(f);
-            var order = await customer.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "A", items = new[] { new { productId = p.ProductId, quantity = 2 } } })); order.EnsureSuccessStatusCode(); using var od = JsonDocument.Parse(await order.Content.ReadAsStringAsync()); var id = od.RootElement.GetProperty("id").GetGuid();
+            var quote = await ShippingQuoteAsync(customer, p.ProductId, 2);
+            var order = await customer.PostAsync("/api/orders/checkout", Json(new { shippingAddress = quote.Destination, shippingQuoteId = quote.Id, items = new[] { new { productId = p.ProductId, quantity = 2 } } })); order.EnsureSuccessStatusCode(); using var od = JsonDocument.Parse(await order.Content.ReadAsStringAsync()); var id = od.RootElement.GetProperty("id").GetGuid();
             Assert.Equal(HttpStatusCode.NoContent, (await customer.PostAsync($"/api/orders/{id}/cancel", null)).StatusCode); Assert.Equal(HttpStatusCode.NoContent, (await customer.PostAsync($"/api/orders/{id}/cancel", null)).StatusCode);
             using var scope = f.Services.CreateScope(); var db = scope.ServiceProvider.GetRequiredService<HoaSapDbContext>(); var inv = await db.Inventories.SingleAsync(x => x.ProductId == p.ProductId); Assert.Equal(3, inv.QuantityAvailable); Assert.Equal(0, inv.QuantityReserved);
         }
@@ -75,7 +84,7 @@ public sealed class HardeningIntegrationTests
     {
         var (f, admin) = await StartAsync(); using (f) using (admin)
         {
-            var p = await ProductAsync(admin, stock: 2); using var customer = await CustomerAsync(f); var order = await customer.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "A", items = new[] { new { productId = p.ProductId, quantity = 1 } } })); order.EnsureSuccessStatusCode(); using var d = JsonDocument.Parse(await order.Content.ReadAsStringAsync()); var id = d.RootElement.GetProperty("id").GetGuid();
+            var p = await ProductAsync(admin, stock: 2); using var customer = await CustomerAsync(f); var quote = await ShippingQuoteAsync(customer, p.ProductId); var order = await customer.PostAsync("/api/orders/checkout", Json(new { shippingAddress = quote.Destination, shippingQuoteId = quote.Id, items = new[] { new { productId = p.ProductId, quantity = 1 } } })); order.EnsureSuccessStatusCode(); using var d = JsonDocument.Parse(await order.Content.ReadAsStringAsync()); var id = d.RootElement.GetProperty("id").GetGuid();
             Assert.Equal(HttpStatusCode.NoContent, (await admin.PostAsync($"/api/orders/{id}/status", Json(new { status = "Cancelled" }))).StatusCode);
             Assert.Equal(HttpStatusCode.NoContent, (await admin.PostAsync($"/api/orders/{id}/status", Json(new { status = "Cancelled" }))).StatusCode);
             using var scope = f.Services.CreateScope(); var db = scope.ServiceProvider.GetRequiredService<HoaSapDbContext>(); Assert.Equal(2, (await db.Inventories.SingleAsync(x => x.ProductId == p.ProductId)).QuantityAvailable);
@@ -87,7 +96,7 @@ public sealed class HardeningIntegrationTests
     {
         var (f, admin) = await StartAsync(); using (f) using (admin)
         {
-            var p = await ProductAsync(admin, stock: 1); using var customer = await CustomerAsync(f); var order = await customer.PostAsync("/api/orders/checkout", Json(new { shippingAddress = "A", items = new[] { new { productId = p.ProductId, quantity = 1 } } })); order.EnsureSuccessStatusCode(); using var od = JsonDocument.Parse(await order.Content.ReadAsStringAsync()); var id = od.RootElement.GetProperty("id").GetGuid();
+            var p = await ProductAsync(admin, stock: 1); using var customer = await CustomerAsync(f); var quote = await ShippingQuoteAsync(customer, p.ProductId); var order = await customer.PostAsync("/api/orders/checkout", Json(new { shippingAddress = quote.Destination, shippingQuoteId = quote.Id, items = new[] { new { productId = p.ProductId, quantity = 1 } } })); order.EnsureSuccessStatusCode(); using var od = JsonDocument.Parse(await order.Content.ReadAsStringAsync()); var id = od.RootElement.GetProperty("id").GetGuid();
             Assert.Equal(HttpStatusCode.NoContent, (await admin.PostAsync($"/api/orders/{id}/status", Json(new { status = "Processing" }))).StatusCode); using var loaded = JsonDocument.Parse(await order.Content.ReadAsStringAsync()); var item = loaded.RootElement.GetProperty("items")[0].GetProperty("id").GetGuid();
             var response = await admin.PostAsync($"/api/orders/{id}/deliveries", Json(new { items = new[] { new { orderItemId = item, quantity = 1 }, new { orderItemId = item, quantity = 1 } } })); Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
         }

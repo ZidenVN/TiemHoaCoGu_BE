@@ -48,6 +48,8 @@ public sealed class AdminLifecycleSafetyTests(ApiFixture fixture) : ApiTestBase(
         edited.EnsureSuccessStatusCode();
         using var saved = JsonDocument.Parse(await edited.Content.ReadAsStringAsync());
         Assert.Equal(900, saved.RootElement.GetProperty("shippingWeightGrams").GetInt32());
+        Assert.False(saved.RootElement.GetProperty("packagingSpecsConfirmed").GetBoolean());
+        Assert.Equal(JsonValueKind.Null, saved.RootElement.GetProperty("packageLengthCm").ValueKind);
         var list = await admin.GetAsync($"/api/management/products?search={code}");
         using var listing = JsonDocument.Parse(await list.Content.ReadAsStringAsync());
         Assert.Equal(900, listing.RootElement.GetProperty("items")[0].GetProperty("shippingWeightGrams").GetInt32());

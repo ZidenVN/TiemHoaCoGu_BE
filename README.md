@@ -18,7 +18,7 @@ ASP.NET Core 8 · C# · Entity Framework Core 8 · SQL Server / SQLite
 
 Dự án không chỉ dừng ở CRUD: các luồng nghiệp vụ xử lý giữ tồn kho, giữ chỗ có thời hạn, báo giá có phiên bản, thanh toán cọc, giao hàng, hoàn tiền và truy vết thay đổi. Backend được tổ chức theo kiến trúc **N-Layer**, triển khai cùng storefront và Admin CMS mà không cần máy chủ frontend riêng.
 
-> **Trạng thái tích hợp:** đã có adapter thanh toán, báo giá vận chuyển và thông báo, nhưng **chưa kết nối nhà cung cấp thật**. Đây không phải bản tích hợp VNPay, MoMo, GHN/GHTK đã sẵn sàng nhận giao dịch. Cần cấu hình, triển khai adapter tương thích và kiểm chứng trên staging trước khi bán hàng thật. Xem [runbook vận hành](docs/operations.md).
+> **Trạng thái sandbox:** MoMo payment/refund adapter khóa endpoint ở sandbox; Mailtrap Email Sandbox và Twilio Test Credentials chỉ dùng test mode. GHN staging v3 chỉ đọc danh mục tỉnh/phường; carrier báo phí vẫn `Disabled` do tài liệu phí chưa có mapping được GHN xác nhận từ mô hình địa chỉ mới. Checkout bắt buộc báo giá, không có phí giả. Không dùng live credentials, giao dịch thật, tin nhắn thật hoặc production deployment. Xem [runbook vận hành](docs/operations.md).
 
 ## Điểm nổi bật
 
@@ -51,8 +51,8 @@ Dự án không chỉ dừng ở CRUD: các luồng nghiệp vụ xử lý giữ
 | Thành phần | Công nghệ / cách triển khai | Vai trò |
 | --- | --- | --- |
 | Tác vụ nền | ASP.NET Core hosted services | Hết hạn đơn, hết hạn giữ chỗ và xử lý outbox trong tiến trình API. |
-| Thông báo | Transactional outbox, SMTP, HTTPS SMS bridge | Lưu thông báo cùng giao dịch; lease, retry có kiểm soát và cách ly kết quả không xác định. |
-| Thanh toán & vận chuyển | `HttpClient`, HTTPS, **HMAC-SHA256** | Hợp đồng adapter tổng quát; webhook có chữ ký, idempotency và đối soát. Chưa phải SDK của nhà cung cấp cụ thể. |
+| Thông báo | Transactional outbox, Mailtrap Email Sandbox, Twilio Test Credentials | Lưu cùng giao dịch; Mailtrap inbox và Twilio API-acceptance giả lập; không gửi email/SMS thật, kết quả mơ hồ bị cách ly. |
+| Thanh toán & vận chuyển | MoMo sandbox adapter; GHN v3 address catalog read-only; carrier `Disabled` | MoMo khóa cứng test endpoint, HMAC/IPN và query đối soát; GHN fee mapping chưa được xác minh, không bật endpoint generic/live. |
 | Giới hạn lưu lượng | ASP.NET Core Rate Limiting + counter trong database | Luôn có lớp bảo vệ từng process; quota database bật qua `RateLimiting__Distributed=true`, mặc định bật ngoài Development. |
 | Kiểm thử .NET | **xUnit 2.9.2**, ASP.NET Core MVC Testing **8.0.22**, Test SDK **17.11.1** | Kiểm thử nghiệp vụ, HTTP API, phân quyền, migration và tích hợp database. |
 | Kiểm thử bổ trợ | Node.js test runner, Python 3, k6 | Kiểm tra an toàn storefront, xác minh TRX, smoke-load và kịch bản cạnh tranh nhiều process. |
@@ -189,8 +189,9 @@ Authorization: Bearer <accessToken>
 | Ghi sổ thanh toán | `POST /api/payments/order/{id}`, `POST /api/payments/booking/{id}` | Admin/Staff, sau khi xác minh tiền thực nhận. |
 | Hoàn tiền | `/api/refunds`, `/api/refunds/order/{id}`, `/{id}/approve`, `/{id}/reject`, `/{id}/process`, `/{id}/process-gateway`, `/{id}/reconcile-gateway` | Admin/Staff tạo yêu cầu; chỉ Admin duyệt, xử lý và đối soát hoàn đơn. |
 | Thu tiền & đối soát | `/api/gateway/orders/{id}/balance`, `/api/gateway/orders/{id}/charge`, `/api/gateway/webhook`, `/api/gateway/reconciliation` | Chủ đơn; webhook có chữ ký; đối soát chỉ Admin. |
-| Báo giá vận chuyển | `POST /api/shipping/quote` | Tài khoản; server tính phí/khối lượng. |
+| Báo giá vận chuyển | `POST /api/shipping/quote` | Tài khoản; cần đủ cân nặng/kích thước kiện đã xác nhận và mapping phí GHN chính thức. |
 | CMS & audit | `/api/management/*`, `/api/management/audit-logs` | Chỉ Admin. |
+| Đối soát thông báo | `GET /api/management/notifications`, `POST /api/management/notifications/{id}/reconcile` | Chỉ Admin; cần mã bằng chứng, không tự gửi lại `Unknown`. |
 | Media | `POST /api/management/media`, `GET /api/media/{fileName}` | Admin upload; đọc ảnh public qua tên hợp lệ. |
 
 Các route rút gọn trong cùng một ô dùng tiền tố của nhóm tương ứng. Catalog hỗ trợ `page`, `pageSize` (tối đa 100), `search`, `categoryId`, `section`. CMS phân trang trả `{items,total,page,pageSize}` với `pageSize` tối đa 100; danh mục trả mảng. Danh sách đơn của khách trả tối đa 200 đơn mới nhất.
@@ -199,7 +200,7 @@ Các route rút gọn trong cùng một ô dùng tiền tố của nhóm tương
 
 Giao diện phục vụ cùng API, không cần build frontend riêng. JWT được giữ **trong bộ nhớ trang**, không dùng `localStorage`; tải lại trang cần đăng nhập lại. Mọi endpoint quản trị đều kiểm tra quyền tại server, không dựa vào việc ẩn nút trên UI.
 
-CMS hỗ trợ quản lý sản phẩm/danh mục/ảnh, tồn kho khả dụng, tài khoản, voucher, đơn, dashboard, CSV, workshop/ca/roster và báo giá custom. Không cho tự khóa/tự hạ quyền Admin; không chuyển khách vãng lai thành tài khoản đăng nhập. Tắt sản phẩm để giữ lịch sử thay vì xóa dữ liệu còn được tham chiếu.
+CMS hỗ trợ quản lý sản phẩm/danh mục/ảnh, tồn kho khả dụng, tài khoản, voucher, đơn, dashboard, CSV, workshop/ca/roster, báo giá custom và đối soát outbox `Unknown` bằng bằng chứng provider. Form sản phẩm cho nhập trọng lượng cùng ba kích thước kiện và cờ xác nhận rõ ràng; không tự đặt 500 g cho SKU mới. Mọi số đo cũ, kể cả 500 g, vẫn chưa xác minh cho tới khi được cân/đo thực tế và Admin xác nhận. Không cho tự khóa/tự hạ quyền Admin; không chuyển khách vãng lai thành tài khoản đăng nhập. Tắt sản phẩm để giữ lịch sử thay vì xóa dữ liệu còn được tham chiếu.
 
 **Dashboard và CSV:** lọc theo UTC, `from` bao gồm và `to` không bao gồm; dashboard mặc định 30 ngày, tối đa 366 ngày. Tiền thu/hoàn được tổng hợp theo nhóm đơn **tạo trong khoảng đã chọn**, không phải dòng tiền theo ngày giao dịch. Chỉ số khách/sản phẩm/tồn thấp là toàn hệ thống. CSV xử lý nguy cơ công thức bảng tính, tối đa 10.000 đơn và báo lỗi nếu vượt giới hạn. Doanh thu đơn, sổ thu tiền và xác nhận ngân hàng là các khái niệm khác nhau.
 
@@ -236,7 +237,7 @@ Hỗ trợ ghi nhận `Cash`/`BankTransfer` sau khi nhân viên kiểm tra tiề
 
 **Không tự gửi lại giao dịch chưa rõ kết quả.** Intent/attempt được lưu bền vững để phục vụ đối soát. Outbox lưu cùng transaction nghiệp vụ, dùng lease và chỉ retry lỗi chắc chắn chưa được nhận; timeout hoặc kết quả mơ hồ chuyển `Unknown` để kiểm tra. Không cam kết exactly-once delivery. Worker chạy trong API, dừng khi API dừng và xử lý các mốc quá hạn khi khởi động lại; đây không phải hàng đợi phân tán độc lập.
 
-Báo giá giao hàng được ràng buộc với tài khoản, giỏ, địa chỉ và thời hạn; server tính trọng lượng từ SKU. Nếu không có báo giá, đơn thường dùng phí mặc định **30.000 VND**; đơn custom dùng giá trọn gói đã duyệt. SKU cũ mặc định **500 gram** để nâng cấp an toàn, cần cân và cập nhật trước khi dùng giá carrier thật. Xem [chi tiết hợp đồng adapter và đối soát](docs/operations.md).
+Báo giá giao hàng được ràng buộc với tài khoản, giỏ, địa chỉ và thời hạn; server tính khối lượng từ SKU và khóa quote/checkout nếu thiếu cân nặng, kích thước kiện hoặc xác nhận Admin. Fingerprint bao gồm các số đo để thay đổi đóng gói làm quote cũ mất hiệu lực. GHN hiện chưa có mapping phí chính thức cho danh mục địa chỉ mới nên checkout vẫn fail-closed, không tạo đơn. Đơn custom dùng giá trọn gói đã duyệt. Dữ liệu 500 g cũ có thể còn trong database nhưng luôn chưa xác minh cho tới khi được đo lại. Xem [chi tiết hợp đồng adapter và đối soát](docs/operations.md).
 
 ## Bảo mật & khả năng quan sát
 

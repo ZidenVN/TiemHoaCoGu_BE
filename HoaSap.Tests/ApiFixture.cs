@@ -3,7 +3,10 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
+using HoaSap.BLL.Commerce;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace HoaSap.Tests;
@@ -37,8 +40,31 @@ public sealed class ApiFixture : WebApplicationFactory<Program>
             ["BootstrapAdmin:Email"] = AdminEmail,
             ["BootstrapAdmin:Password"] = AdminPassword,
             ["BootstrapAdmin:PhoneNumber"] = "0900000001",
-            ["BootstrapAdmin:FullName"] = "QA Admin"
+            ["BootstrapAdmin:FullName"] = "QA Admin",
+            ["Shipping:Carrier:Origin"] = "Synthetic QA warehouse"
         }));
+        builder.ConfigureTestServices(services =>
+        {
+            services.AddSingleton<ICarrierAdapter, SyntheticQaCarrier>();
+            services.AddSingleton<IGhnStagingAddressCatalog, SyntheticQaAddressCatalog>();
+        });
+    }
+
+    private sealed class SyntheticQaCarrier : ICarrierAdapter
+    {
+        public Task<CarrierRateResult> QuoteAsync(CarrierRateRequest request, CancellationToken ct = default) =>
+            Task.FromResult(new CarrierRateResult(true, 42000m, null, null));
+    }
+
+    private sealed class SyntheticQaAddressCatalog : IGhnStagingAddressCatalog
+    {
+        public Task<IReadOnlyList<ShippingAreaDto>> GetProvincesAsync(CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<ShippingAreaDto>>([new ShippingAreaDto(1000001, "Hồ Chí Minh", 1)]);
+
+        public Task<IReadOnlyList<ShippingAreaDto>> GetWardsAsync(int provinceId, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<ShippingAreaDto>>(provinceId == 1000001
+                ? [new ShippingAreaDto(1003580, "Phường Thủ Đức", 1000001)]
+                : []);
     }
 
     protected override void Dispose(bool disposing)
@@ -58,6 +84,22 @@ public abstract class ApiTestBase(ApiFixture fixture)
     protected readonly HttpClient Client = fixture.CreateClient();
 
     protected static StringContent Json(object value) => new(JsonSerializer.Serialize(value), Encoding.UTF8, "application/json");
+
+    protected sealed record TestShippingQuote(Guid Id, string Destination, decimal Amount);
+
+    protected async Task<TestShippingQuote> ShippingQuoteAsync(HttpClient customer, string streetAddress, params (Guid ProductId, int Quantity)[] items)
+    {
+        var response = await customer.PostAsync("/api/shipping/quote", Json(new
+        {
+            streetAddress,
+            provinceId = 1000001,
+            wardId = 1003580,
+            items = items.Select(x => new { productId = x.ProductId, quantity = x.Quantity }).ToArray()
+        }));
+        response.EnsureSuccessStatusCode();
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        return new TestShippingQuote(document.RootElement.GetProperty("id").GetGuid(), document.RootElement.GetProperty("destination").GetString()!, document.RootElement.GetProperty("amount").GetDecimal());
+    }
 
     protected async Task<string> RegisterAsync(string email, string? phone = null, string password = "Password-123!")
     {

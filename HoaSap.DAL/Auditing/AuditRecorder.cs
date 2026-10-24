@@ -13,7 +13,7 @@ internal static class AuditRecorder
     {
         [typeof(Customer)] = ["Role", "IsActive", "IsGuest", "CreatedAt"],
         [typeof(Category)] = ["Code", "Name"],
-        [typeof(Product)] = ["CategoryId", "Code", "Name", "Price", "OriginalPrice", "Badge", "Section", "IsCustomizable", "IsPreOrder", "ShippingWeightGrams", "IsActive"],
+        [typeof(Product)] = ["CategoryId", "Code", "Name", "Price", "OriginalPrice", "Badge", "Section", "IsCustomizable", "IsPreOrder", "ShippingWeightGrams", "PackageLengthCm", "PackageWidthCm", "PackageHeightCm", "PackagingSpecsConfirmed", "IsActive"],
         [typeof(ProductImage)] = ["ProductId", "DisplayOrder"],
         [typeof(Inventory)] = ["ProductId", "QuantityAvailable", "QuantityReserved", "LastUpdated"],
         [typeof(Voucher)] = ["Code", "DiscountType", "DiscountValue", "MinOrderAmount", "MaxDiscountAmount", "StartDate", "EndDate", "UsageLimit", "UsedCount", "IsActive"],
