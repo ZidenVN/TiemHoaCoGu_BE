@@ -8,6 +8,56 @@ namespace HoaSap.Tests;
 public sealed class CommerceTests(ApiFixture fixture) : ApiTestBase(fixture)
 {
     [Fact]
+    public async Task CatalogList_ReportsTheSameAvailableStockAsProductDetail()
+    {
+        var admin = await AuthenticatedAsync(await AdminTokenAsync());
+        var token = Guid.NewGuid().ToString("N");
+        var categoryResponse = await admin.PostAsync("/api/management/categories", Json(new { code = "QA-STOCK-CAT-" + token[..8], name = "QA Stock Catalog" }));
+        categoryResponse.EnsureSuccessStatusCode();
+        using var category = JsonDocument.Parse(await categoryResponse.Content.ReadAsStringAsync());
+        var categoryId = category.RootElement.GetProperty("id").GetGuid();
+
+        async Task<Guid> CreateProduct(string suffix)
+        {
+            var response = await admin.PostAsync("/api/management/products", Json(new
+            {
+                code = "QA-STOCK-" + token[..12] + "-" + suffix,
+                name = "QA Stock " + token,
+                categoryId,
+                price = 100000m,
+                isActive = true
+            }));
+            response.EnsureSuccessStatusCode();
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            return body.RootElement.GetProperty("id").GetGuid();
+        }
+
+        var positiveId = await CreateProduct("positive");
+        var zeroId = await CreateProduct("zero");
+        var missingInventoryId = await CreateProduct("missing");
+        Assert.Equal(HttpStatusCode.NoContent, (await admin.PutAsync($"/api/management/inventory/{positiveId}?quantity=7", Json(new { }))).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await admin.PutAsync($"/api/management/inventory/{zeroId}?quantity=0", Json(new { }))).StatusCode);
+
+        using var list = JsonDocument.Parse(await (await Client.GetAsync($"/api/catalog/products?search={token}&page=1&pageSize=100")).Content.ReadAsStringAsync());
+        var items = list.RootElement.GetProperty("items");
+        Assert.Equal(3, items.GetArrayLength());
+
+        foreach (var productId in new[] { positiveId, zeroId, missingInventoryId })
+        {
+            var detailResponse = await Client.GetAsync($"/api/catalog/products/{productId}");
+            detailResponse.EnsureSuccessStatusCode();
+            using var detail = JsonDocument.Parse(await detailResponse.Content.ReadAsStringAsync());
+            var detailQuantity = detail.RootElement.GetProperty("quantityAvailable").GetInt32();
+            var listItem = items.EnumerateArray().Single(item => item.GetProperty("id").GetGuid() == productId);
+            Assert.Equal(detailQuantity, listItem.GetProperty("quantityAvailable").GetInt32());
+        }
+
+        Assert.Equal(7, items.EnumerateArray().Single(item => item.GetProperty("id").GetGuid() == positiveId).GetProperty("quantityAvailable").GetInt32());
+        Assert.Equal(0, items.EnumerateArray().Single(item => item.GetProperty("id").GetGuid() == zeroId).GetProperty("quantityAvailable").GetInt32());
+        Assert.Equal(0, items.EnumerateArray().Single(item => item.GetProperty("id").GetGuid() == missingInventoryId).GetProperty("quantityAvailable").GetInt32());
+    }
+
+    [Fact]
     public async Task Checkout_UsesServerProductPriceAndServerShipping()
     {
         var admin = await AuthenticatedAsync(await AdminTokenAsync());

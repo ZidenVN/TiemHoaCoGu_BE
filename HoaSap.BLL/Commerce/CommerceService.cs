@@ -16,7 +16,7 @@ public static class CommerceRules
 }
 
 public sealed record PageResult<T>(IReadOnlyList<T> Items, int Page, int PageSize, int Total);
-public sealed record ProductDto(Guid Id, Guid CategoryId, string Code, string Name, decimal Price, decimal? OriginalPrice, string? ThumbnailUrl, string? Description, string? Badge, string? Section, bool IsCustomizable, bool IsPreOrder, bool IsActive);
+public sealed record ProductDto(Guid Id, Guid CategoryId, string Code, string Name, decimal Price, decimal? OriginalPrice, string? ThumbnailUrl, string? Description, string? Badge, string? Section, bool IsCustomizable, bool IsPreOrder, bool IsActive, int QuantityAvailable);
 public sealed record CartLineDto(Guid Id, Guid ProductId, string ProductName, int Quantity, decimal UnitPrice, decimal LineTotal, string? CustomNote, string? ReferenceImageUrl);
 public sealed record OrderDto(Guid Id, string OrderCode, decimal SubTotal, decimal DiscountAmount, decimal ShippingFee, decimal TotalAmount, string OrderStatus, string PaymentStatus, string ShippingAddress, DateTime CreatedAt, IReadOnlyList<OrderLineDto> Items);
 public sealed record OrderLineDto(Guid Id, Guid ProductId, int Quantity, decimal UnitPrice, decimal FinalPrice, int ShippedQuantity, string? CustomNote, string? ReferenceImageUrl);
@@ -95,7 +95,7 @@ public sealed class CommerceService(HoaSapDbContext db)
         var total = await query.CountAsync(ct);
         if ((long)(q.Page - 1) * q.PageSize >= total) return new([], q.Page, q.PageSize, total);
         var items = await query.OrderByDescending(p => p.CreatedAt).Skip((q.Page - 1) * q.PageSize).Take(q.PageSize)
-            .Select(p => new ProductDto(p.Id, p.CategoryId, p.Code, p.Name, p.Price, p.OriginalPrice, p.ThumbnailUrl, p.Description, p.Badge, p.Section, p.IsCustomizable, p.IsPreOrder, p.IsActive))
+            .Select(p => new ProductDto(p.Id, p.CategoryId, p.Code, p.Name, p.Price, p.OriginalPrice, p.ThumbnailUrl, p.Description, p.Badge, p.Section, p.IsCustomizable, p.IsPreOrder, p.IsActive, p.Inventory == null ? 0 : p.Inventory.QuantityAvailable))
             .ToListAsync(ct);
         return new(items, q.Page, q.PageSize, total);
     }
