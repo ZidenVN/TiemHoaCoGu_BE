@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using HoaSap.BLL;
 using HoaSap.DAL;
+using HoaSap.Domain;
 using HoaSap.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 
@@ -188,7 +189,13 @@ public sealed class CommerceService(HoaSapDbContext db)
         }
         var products = await db.Products.Where(p => lines.Select(x => x.ProductId).Contains(p.Id) && p.IsActive).ToDictionaryAsync(p => p.Id, ct);
         if (products.Count != lines.Count) throw Bad("Có sản phẩm không còn bán");
-        if (shippingQuote.CartFingerprint != ShippingQuoteService.Fingerprint(lines.Select(x => (x.ProductId, x.Quantity, products[x.ProductId].ShippingWeightGrams)))) throw Conflict("Giỏ hàng hoặc trọng lượng đã thay đổi, cần lấy lại báo giá vận chuyển");
+        if (products.Values.Any(x => !PackagingSpecifications.IsConfirmedAndComplete(x))) throw Conflict("Thông số đóng gói chưa đủ hoặc chưa được xác nhận; cần xác minh trước khi tạo đơn");
+        var packaging = lines.Select(x =>
+        {
+            var product = products[x.ProductId];
+            return (x.ProductId, x.Quantity, product.ShippingWeightGrams, product.PackageLengthCm, product.PackageWidthCm, product.PackageHeightCm, product.PackagingSpecsConfirmed);
+        });
+        if (shippingQuote.CartFingerprint != ShippingQuoteService.Fingerprint(packaging)) throw Conflict("Giỏ hàng hoặc thông số đóng gói đã thay đổi, cần lấy lại báo giá vận chuyển");
         decimal subtotal = 0;
         foreach (var line in lines)
         {

@@ -189,7 +189,7 @@ Authorization: Bearer <accessToken>
 | Ghi sổ thanh toán | `POST /api/payments/order/{id}`, `POST /api/payments/booking/{id}` | Admin/Staff, sau khi xác minh tiền thực nhận. |
 | Hoàn tiền | `/api/refunds`, `/api/refunds/order/{id}`, `/{id}/approve`, `/{id}/reject`, `/{id}/process`, `/{id}/process-gateway`, `/{id}/reconcile-gateway` | Admin/Staff tạo yêu cầu; chỉ Admin duyệt, xử lý và đối soát hoàn đơn. |
 | Thu tiền & đối soát | `/api/gateway/orders/{id}/balance`, `/api/gateway/orders/{id}/charge`, `/api/gateway/webhook`, `/api/gateway/reconciliation` | Chủ đơn; webhook có chữ ký; đối soát chỉ Admin. |
-| Báo giá vận chuyển | `POST /api/shipping/quote` | Tài khoản; server tính phí/khối lượng. |
+| Báo giá vận chuyển | `POST /api/shipping/quote` | Tài khoản; cần đủ cân nặng/kích thước kiện đã xác nhận và mapping phí GHN chính thức. |
 | CMS & audit | `/api/management/*`, `/api/management/audit-logs` | Chỉ Admin. |
 | Đối soát thông báo | `GET /api/management/notifications`, `POST /api/management/notifications/{id}/reconcile` | Chỉ Admin; cần mã bằng chứng, không tự gửi lại `Unknown`. |
 | Media | `POST /api/management/media`, `GET /api/media/{fileName}` | Admin upload; đọc ảnh public qua tên hợp lệ. |
@@ -200,7 +200,7 @@ Các route rút gọn trong cùng một ô dùng tiền tố của nhóm tương
 
 Giao diện phục vụ cùng API, không cần build frontend riêng. JWT được giữ **trong bộ nhớ trang**, không dùng `localStorage`; tải lại trang cần đăng nhập lại. Mọi endpoint quản trị đều kiểm tra quyền tại server, không dựa vào việc ẩn nút trên UI.
 
-CMS hỗ trợ quản lý sản phẩm/danh mục/ảnh, tồn kho khả dụng, tài khoản, voucher, đơn, dashboard, CSV, workshop/ca/roster, báo giá custom và đối soát outbox `Unknown` bằng bằng chứng provider. Trọng lượng đóng gói có thể nhập ở form sản phẩm; mặc định 500 g của dữ liệu cũ phải được cân/xác nhận trước khi bật nhà vận chuyển. Không cho tự khóa/tự hạ quyền Admin; không chuyển khách vãng lai thành tài khoản đăng nhập. Tắt sản phẩm để giữ lịch sử thay vì xóa dữ liệu còn được tham chiếu.
+CMS hỗ trợ quản lý sản phẩm/danh mục/ảnh, tồn kho khả dụng, tài khoản, voucher, đơn, dashboard, CSV, workshop/ca/roster, báo giá custom và đối soát outbox `Unknown` bằng bằng chứng provider. Form sản phẩm cho nhập trọng lượng cùng ba kích thước kiện và cờ xác nhận rõ ràng; không tự đặt 500 g cho SKU mới. Mọi số đo cũ, kể cả 500 g, vẫn chưa xác minh cho tới khi được cân/đo thực tế và Admin xác nhận. Không cho tự khóa/tự hạ quyền Admin; không chuyển khách vãng lai thành tài khoản đăng nhập. Tắt sản phẩm để giữ lịch sử thay vì xóa dữ liệu còn được tham chiếu.
 
 **Dashboard và CSV:** lọc theo UTC, `from` bao gồm và `to` không bao gồm; dashboard mặc định 30 ngày, tối đa 366 ngày. Tiền thu/hoàn được tổng hợp theo nhóm đơn **tạo trong khoảng đã chọn**, không phải dòng tiền theo ngày giao dịch. Chỉ số khách/sản phẩm/tồn thấp là toàn hệ thống. CSV xử lý nguy cơ công thức bảng tính, tối đa 10.000 đơn và báo lỗi nếu vượt giới hạn. Doanh thu đơn, sổ thu tiền và xác nhận ngân hàng là các khái niệm khác nhau.
 
@@ -237,7 +237,7 @@ Hỗ trợ ghi nhận `Cash`/`BankTransfer` sau khi nhân viên kiểm tra tiề
 
 **Không tự gửi lại giao dịch chưa rõ kết quả.** Intent/attempt được lưu bền vững để phục vụ đối soát. Outbox lưu cùng transaction nghiệp vụ, dùng lease và chỉ retry lỗi chắc chắn chưa được nhận; timeout hoặc kết quả mơ hồ chuyển `Unknown` để kiểm tra. Không cam kết exactly-once delivery. Worker chạy trong API, dừng khi API dừng và xử lý các mốc quá hạn khi khởi động lại; đây không phải hàng đợi phân tán độc lập.
 
-Báo giá giao hàng được ràng buộc với tài khoản, giỏ, địa chỉ và thời hạn; server tính trọng lượng từ SKU. Đơn thường bắt buộc có quote hợp lệ; nếu GHN chưa thể báo giá, checkout fail-closed và không tạo đơn. Đơn custom dùng giá trọn gói đã duyệt. SKU cũ mặc định **500 gram** để nâng cấp an toàn, cần cân và cập nhật trước khi dùng carrier thật. Xem [chi tiết hợp đồng adapter và đối soát](docs/operations.md).
+Báo giá giao hàng được ràng buộc với tài khoản, giỏ, địa chỉ và thời hạn; server tính khối lượng từ SKU và khóa quote/checkout nếu thiếu cân nặng, kích thước kiện hoặc xác nhận Admin. Fingerprint bao gồm các số đo để thay đổi đóng gói làm quote cũ mất hiệu lực. GHN hiện chưa có mapping phí chính thức cho danh mục địa chỉ mới nên checkout vẫn fail-closed, không tạo đơn. Đơn custom dùng giá trọn gói đã duyệt. Dữ liệu 500 g cũ có thể còn trong database nhưng luôn chưa xác minh cho tới khi được đo lại. Xem [chi tiết hợp đồng adapter và đối soát](docs/operations.md).
 
 ## Bảo mật & khả năng quan sát
 

@@ -15,7 +15,8 @@ public sealed class ProductionRefundTests(ApiFixture fixture) : ApiTestBase(fixt
         category.EnsureSuccessStatusCode();
         using var categoryJson = JsonDocument.Parse(await category.Content.ReadAsStringAsync());
         var categoryId = categoryJson.RootElement.GetProperty("id").GetGuid();
-        var product = await admin.PostAsync("/api/management/products", Json(new { code = "RFP-" + Guid.NewGuid().ToString("N")[..8], name = "Refund Flower", categoryId, price = 100000m, isActive = true }));
+        // Synthetic measurements are only for this isolated fake-carrier test.
+        var product = await admin.PostAsync("/api/management/products", Json(new { code = "RFP-" + Guid.NewGuid().ToString("N")[..8], name = "Refund Flower", categoryId, price = 100000m, shippingWeightGrams = 500, packageLengthCm = 30m, packageWidthCm = 20m, packageHeightCm = 10m, packagingSpecsConfirmed = true, isActive = true }));
         product.EnsureSuccessStatusCode();
         using var productJson = JsonDocument.Parse(await product.Content.ReadAsStringAsync());
         var productId = productJson.RootElement.GetProperty("id").GetGuid();

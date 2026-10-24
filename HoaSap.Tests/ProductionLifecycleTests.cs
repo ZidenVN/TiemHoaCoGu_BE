@@ -30,7 +30,8 @@ public sealed class ProductionLifecycleTests
     {
         var cat = await admin.PostAsync("/api/management/categories", Json(new { code = "T-" + Guid.NewGuid().ToString("N")[..8], name = "QA" })); cat.EnsureSuccessStatusCode();
         using var cd = JsonDocument.Parse(await cat.Content.ReadAsStringAsync()); var categoryId = cd.RootElement.GetProperty("id").GetGuid();
-        var p = await admin.PostAsync("/api/management/products", Json(new { code = "P-" + Guid.NewGuid().ToString("N")[..8], name = "QA Flower", categoryId, price = 100000m, isActive = true })); p.EnsureSuccessStatusCode();
+        // Synthetic measurements are confined to this test helper; production seed SKUs remain unverified.
+        var p = await admin.PostAsync("/api/management/products", Json(new { code = "P-" + Guid.NewGuid().ToString("N")[..8], name = "QA Flower", categoryId, price = 100000m, shippingWeightGrams = 500, packageLengthCm = 30m, packageWidthCm = 20m, packageHeightCm = 10m, packagingSpecsConfirmed = true, isActive = true })); p.EnsureSuccessStatusCode();
         using var pd = JsonDocument.Parse(await p.Content.ReadAsStringAsync()); var id = pd.RootElement.GetProperty("id").GetGuid();
         (await admin.PutAsync($"/api/management/inventory/{id}?quantity={stock}", Json(new { }))).EnsureSuccessStatusCode(); return id;
     }

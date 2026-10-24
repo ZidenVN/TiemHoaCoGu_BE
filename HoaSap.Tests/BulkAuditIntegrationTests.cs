@@ -17,7 +17,8 @@ public sealed class BulkAuditIntegrationTests(ApiFixture fixture) : ApiTestBase(
     {
         var category = await admin.PostAsync("/api/management/categories", Json(new { code = "BA-" + Guid.NewGuid().ToString("N")[..8], name = "Bulk audit" })); category.EnsureSuccessStatusCode();
         using var c = JsonDocument.Parse(await category.Content.ReadAsStringAsync()); var categoryId = c.RootElement.GetProperty("id").GetGuid();
-        var product = await admin.PostAsync("/api/management/products", Json(new { categoryId, code = "BA-P-" + Guid.NewGuid().ToString("N")[..8], name = "Bulk audit flower", price = 100000m, isActive = true })); product.EnsureSuccessStatusCode();
+        // Synthetic measurements are limited to test-only fake-carrier scenarios.
+        var product = await admin.PostAsync("/api/management/products", Json(new { categoryId, code = "BA-P-" + Guid.NewGuid().ToString("N")[..8], name = "Bulk audit flower", price = 100000m, shippingWeightGrams = 500, packageLengthCm = 30m, packageWidthCm = 20m, packageHeightCm = 10m, packagingSpecsConfirmed = true, isActive = true })); product.EnsureSuccessStatusCode();
         using var p = JsonDocument.Parse(await product.Content.ReadAsStringAsync()); var id = p.RootElement.GetProperty("id").GetGuid();
         (await admin.PutAsync($"/api/management/inventory/{id}?quantity={stock}", Json(new { }))).EnsureSuccessStatusCode();
         await using var scope = _fixture.Services.CreateAsyncScope(); var inventory = await scope.ServiceProvider.GetRequiredService<HoaSapDbContext>().Inventories.SingleAsync(x => x.ProductId == id);

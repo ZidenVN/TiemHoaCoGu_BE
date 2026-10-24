@@ -24,7 +24,7 @@
   if(!s.user)return auth();
   const [addresses,areaResult]=await Promise.all([api('/api/addresses').catch(()=>[]),api('/api/shipping/locations/provinces').catch(()=>null)]);
   const provinces=Array.isArray(areaResult)?areaResult:[],form=el('form',{class:'panel'}),street=el('textarea',{name:'streetAddress',required:'',placeholder:'Số nhà, tên đường'}),provinceSelect=el('select',{name:'provinceId',required:''}),wardSelect=el('select',{name:'wardId',required:'',disabled:true}),key=id();
-  const fee=el('p',{class:'muted',text:'Chọn tỉnh và phường để thử lấy báo giá; chưa có quote thì không thể tạo đơn.'}),message=el('p',{class:'form-error',role:'alert'});
+  const fee=el('p',{class:'muted',text:'Chưa thể báo phí: thiếu mapping phí GHN chính thức và/hoặc thông số kiện hàng chưa được xác nhận. Không tạo đơn.'}),message=el('p',{class:'form-error',role:'alert'});
   let quote=null;
   const resetQuote=()=>{quote=null;fee.textContent='Địa chỉ đã thay đổi. Hãy lấy báo giá vận chuyển hợp lệ trước khi tạo đơn.'};
   provinceSelect.append(el('option',{value:'',text:provinces.length?'Chọn tỉnh/thành phố':'Danh mục tỉnh GHN staging chưa sẵn sàng'}));
@@ -43,9 +43,9 @@
    const preferredProvince=provinces.find(x=>String(x.name).trim().toLocaleLowerCase('vi')===String(addresses[0].province||'').trim().toLocaleLowerCase('vi'));
    if(preferredProvince){provinceSelect.value=String(preferredProvince.id);await loadWards(preferredProvince.id,addresses[0].ward||'')}
   }
-  const quoteButton=el('button',{class:'button quiet',type:'button',text:'Tính phí nhà vận chuyển',on:{click:async()=>{quoteButton.disabled=true;message.textContent='';try{quote=await api('/api/shipping/quote',{method:'POST',body:JSON.stringify({streetAddress:street.value.trim(),provinceId:Number(provinceSelect.value),wardId:Number(wardSelect.value)})});fee.textContent='Phí vận chuyển: '+money(quote.amount)+' · có hiệu lực đến '+new Date(quote.expiresAt).toLocaleTimeString('vi-VN')}catch(e){quote=null;fee.textContent=e.message+' Không áp dụng phí mặc định; chưa thể tạo đơn.'}finally{quoteButton.disabled=false}}}});
+  const quoteButton=el('button',{class:'button quiet',type:'button',text:'GHN chưa sẵn sàng báo phí',disabled:true});
   form.append(el('label',{class:'form-label',text:'Số nhà, tên đường'},[street]),el('label',{class:'form-label',text:'Tỉnh/thành phố'},[provinceSelect]),el('label',{class:'form-label',text:'Phường/xã'},[wardSelect]),el('label',{class:'form-label',text:'Tên người nhận'},[el('input',{name:'receiverName',required:'',value:s.user.fullName||''})]),el('label',{class:'form-label',text:'Số điện thoại'},[el('input',{name:'receiverPhone',required:'',value:s.user.phoneNumber||'',type:'tel'})]),el('label',{class:'form-label',text:'Mã ưu đãi'},[el('input',{name:'voucherCode',maxLength:'40'})]),el('label',{class:'form-label',text:'Ghi chú'},[el('textarea',{name:'note'})]),quoteButton,fee,message);
-  const submit=el('button',{class:'button primary',type:'submit',text:'Xác nhận đặt hàng'});form.append(submit);
+  const submit=el('button',{class:'button primary',type:'submit',text:'Tạm khóa checkout',disabled:true});form.append(submit);
   form.addEventListener('submit',async e=>{e.preventDefault();if(!quote){message.textContent='Chưa có báo giá vận chuyển hợp lệ; không thể tạo đơn.';return}submit.disabled=true;try{const {streetAddress,provinceId,wardId,...orderFields}=Object.fromEntries(new FormData(form));const destination=[String(streetAddress||'').trim(),wardSelect.selectedOptions[0]?.textContent,provinceSelect.selectedOptions[0]?.textContent].filter(Boolean).join(', ');const order=await api('/api/orders/checkout',{method:'POST',body:JSON.stringify({...orderFields,shippingAddress:destination,items:[],shippingQuoteId:quote.id,idempotencyKey:key})});$('#modal').close();await loadCart();renderAccount();toast('Đã tạo đơn. Thanh toán đang chờ xác nhận.');await payOrder(order.id)}catch(x){message.textContent=x.message}finally{submit.disabled=false}});
   modal('Thông tin giao hàng',form);
  }

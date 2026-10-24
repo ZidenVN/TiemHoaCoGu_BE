@@ -255,7 +255,8 @@ public sealed class SqlServerBulkAuditTests
         await using var db = fixture.CreateContext();
         var first = await SeedAsync(db, stock: 5, voucherLimit: 1);
         var category = new Category { Code = $"CAT-{Guid.NewGuid():N}", Name = "Race" };
-        var product = new Product { CategoryId = category.Id, Code = $"PROD-{Guid.NewGuid():N}", Name = "Race product", Price = 100m, IsActive = true };
+        // Synthetic package values exist only for the isolated fake-carrier concurrency test.
+        var product = new Product { CategoryId = category.Id, Code = $"PROD-{Guid.NewGuid():N}", Name = "Race product", Price = 100m, ShippingWeightGrams = 500, PackageLengthCm = 30m, PackageWidthCm = 20m, PackageHeightCm = 10m, PackagingSpecsConfirmed = true, IsActive = true };
         db.Categories.Add(category); db.Products.Add(product); db.Inventories.Add(new Inventory { ProductId = product.Id, QuantityAvailable = 5 });
         var secondCustomer = new Customer { Email = $"voucher2-{Guid.NewGuid():N}@example.test", FullName = "Second", PhoneNumber = "0900000003", PasswordHash = "test" };
         db.Customers.Add(secondCustomer); await db.SaveChangesAsync(); db.ChangeTracker.Clear();
@@ -303,7 +304,8 @@ public sealed class SqlServerBulkAuditTests
     private static async Task<Seed> SeedAsync(HoaSapDbContext db, int stock, int voucherLimit = 10)
     {
         var category = new Category { Code = $"CAT-{Guid.NewGuid():N}", Name = "Integration" };
-        var product = new Product { CategoryId = category.Id, Code = $"PROD-{Guid.NewGuid():N}", Name = "Integration flower", Price = 100m, IsActive = true };
+        // Synthetic package values exist only for this SQL integration fixture and its fake carrier.
+        var product = new Product { CategoryId = category.Id, Code = $"PROD-{Guid.NewGuid():N}", Name = "Integration flower", Price = 100m, ShippingWeightGrams = 500, PackageLengthCm = 30m, PackageWidthCm = 20m, PackageHeightCm = 10m, PackagingSpecsConfirmed = true, IsActive = true };
         var inventory = new Inventory { ProductId = product.Id, QuantityAvailable = stock };
         var voucher = new Voucher { Code = $"V-{Guid.NewGuid():N}", Description = "Integration voucher", DiscountType = "FixedAmount", DiscountValue = 10m, StartDate = DateTime.UtcNow.AddHours(-1), EndDate = DateTime.UtcNow.AddHours(1), UsageLimit = voucherLimit, IsActive = true };
         var customer = new Customer { Email = $"customer-{Guid.NewGuid():N}@example.test", FullName = "Integration Customer", PhoneNumber = "0900000001", PasswordHash = "test" };

@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Text.RegularExpressions;
+using System.Text.Json.Serialization;
 
 namespace HoaSap.API.Controllers;
 
@@ -20,6 +21,7 @@ public sealed class ManagementController(HoaSapDbContext db) : ControllerBase
         if (request.Price < 0 || (request.OriginalPrice is < 0)) throw new BusinessException(400, "Price cannot be negative");
         if (decimal.Round(request.Price, 2) != request.Price || (request.OriginalPrice is { } original && decimal.Round(original, 2) != original))
             throw new BusinessException(400, "Price supports at most two decimal places");
+        request.ValidatePackaging();
         if (!await db.Categories.AnyAsync(x => x.Id == request.CategoryId, ct)) throw new BusinessException(404, "Category not found");
         ValidateMediaUrl(request.ThumbnailUrl, "Thumbnail URL");
         var code = request.Code.Trim();
@@ -40,7 +42,11 @@ public sealed class ManagementController(HoaSapDbContext db) : ControllerBase
             Section = request.Section?.Trim() ?? "",
             IsCustomizable = request.IsCustomizable,
             IsPreOrder = request.IsPreOrder,
-            ShippingWeightGrams = request.ShippingWeightGrams ?? 500,
+            ShippingWeightGrams = request.ShippingWeightGrams,
+            PackageLengthCm = request.PackageLengthCm,
+            PackageWidthCm = request.PackageWidthCm,
+            PackageHeightCm = request.PackageHeightCm,
+            PackagingSpecsConfirmed = request.PackagingSpecsConfirmed,
             IsActive = request.IsActive,
             CreatedAt = DateTime.UtcNow
         };
@@ -118,6 +124,12 @@ public sealed class AdminCategoryRequest
 
 public sealed class AdminProductRequest
 {
+    private int? _shippingWeightGrams;
+    private decimal? _packageLengthCm;
+    private decimal? _packageWidthCm;
+    private decimal? _packageHeightCm;
+    private bool _packagingSpecsConfirmed;
+
     [Required] public Guid CategoryId { get; set; }
     [Required, StringLength(80)] public string Code { get; set; } = "";
     [Required, StringLength(300)] public string Name { get; set; } = "";
@@ -128,9 +140,22 @@ public sealed class AdminProductRequest
     [StringLength(100)] public string? Badge { get; set; }
     [StringLength(100)] public string? Section { get; set; }
     public bool IsCustomizable { get; set; }
-    [Range(1, 1000000)] public int? ShippingWeightGrams { get; set; }
+    [Range(1, 1000000)] public int? ShippingWeightGrams { get => _shippingWeightGrams; set { _shippingWeightGrams = value; PackagingFieldsWereProvided = true; } }
+    [Range(typeof(decimal), "0.01", "10000")] public decimal? PackageLengthCm { get => _packageLengthCm; set { _packageLengthCm = value; PackagingFieldsWereProvided = true; } }
+    [Range(typeof(decimal), "0.01", "10000")] public decimal? PackageWidthCm { get => _packageWidthCm; set { _packageWidthCm = value; PackagingFieldsWereProvided = true; } }
+    [Range(typeof(decimal), "0.01", "10000")] public decimal? PackageHeightCm { get => _packageHeightCm; set { _packageHeightCm = value; PackagingFieldsWereProvided = true; } }
+    public bool PackagingSpecsConfirmed { get => _packagingSpecsConfirmed; set { _packagingSpecsConfirmed = value; PackagingFieldsWereProvided = true; } }
+    [JsonIgnore] public bool PackagingFieldsWereProvided { get; private set; }
     public bool IsPreOrder { get; set; }
     public bool IsActive { get; set; } = true;
+
+    public void ValidatePackaging()
+    {
+        if (new decimal?[] { PackageLengthCm, PackageWidthCm, PackageHeightCm }.Any(x => x is { } value && decimal.Round(value, 2) != value))
+            throw new BusinessException(400, "Package dimensions support at most two decimal places.");
+        if (PackagingSpecsConfirmed && (ShippingWeightGrams is null || PackageLengthCm is null || PackageWidthCm is null || PackageHeightCm is null))
+            throw new BusinessException(400, "Cannot confirm packaging until weight, length, width, and height are all entered.");
+    }
 }
 
 public sealed class AdminVoucherRequest

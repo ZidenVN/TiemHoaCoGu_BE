@@ -34,7 +34,7 @@ public sealed class ShippingQuoteTests
             s.Db = new HoaSapDbContext(new DbContextOptionsBuilder<HoaSapDbContext>().UseSqlite(s.Connection).Options);
             await s.Db.Database.EnsureCreatedAsync();
             var category = new Category { Code = "SHIP", Name = "Shipping" };
-            s.Product = new Product { CategoryId = category.Id, Code = "SHIP-P", Name = "Box", Price = 100000m, ShippingWeightGrams = 750 };
+            s.Product = new Product { CategoryId = category.Id, Code = "SHIP-P", Name = "Box", Price = 100000m, ShippingWeightGrams = 750, PackageLengthCm = 30m, PackageWidthCm = 20m, PackageHeightCm = 10m, PackagingSpecsConfirmed = true };
             s.Db.AddRange(s.Customer, category, s.Product, new Inventory { ProductId = s.Product.Id, QuantityAvailable = 10 }, new ShoppingCartItem { CustomerId = s.Customer.Id, ProductId = s.Product.Id, Quantity = 2 });
             await s.Db.SaveChangesAsync(); return s;
         }
@@ -58,6 +58,20 @@ public sealed class ShippingQuoteTests
         await Assert.ThrowsAsync<BusinessException>(() => s.Shipping.QuoteAsync(Guid.NewGuid(), new("42 Test Street", 1000001, "Hồ Chí Minh", 1003580, "Phường Thủ Đức")));
         await Assert.ThrowsAsync<BusinessException>(() => s.Shipping.QuoteAsync(s.Customer.Id, new("42 Test Street", 1000001, "Hồ Chí Minh", 1003580, "Phường Thủ Đức", Items: [new CartItemRequest { ProductId = s.Product.Id, Quantity = 0 }])));
         Assert.Null(s.Carrier.Last);
+    }
+
+    [Fact]
+    public async Task Quote_rejects_unconfirmed_or_incomplete_packaging_before_carrier_call()
+    {
+        await using var s = await Store.CreateAsync();
+        s.Product.PackagingSpecsConfirmed = false;
+        s.Product.PackageLengthCm = null;
+        await s.Db.SaveChangesAsync();
+
+        var error = await Assert.ThrowsAsync<BusinessException>(() => s.Shipping.QuoteAsync(s.Customer.Id, new("42 Test Street", 1000001, "Hồ Chí Minh", 1003580, "Phường Thủ Đức")));
+        Assert.Equal(503, error.StatusCode);
+        Assert.Null(s.Carrier.Last);
+        Assert.Empty(await s.Db.ShippingQuotes.ToListAsync());
     }
 
     [Fact]
@@ -96,5 +110,20 @@ public sealed class ShippingQuoteTests
         var changed = new CheckoutRequest { ShippingAddress = quote.Destination, ShippingQuoteId = quote.Id, IdempotencyKey = "changed-cart" };
         Assert.Equal(409, (await Assert.ThrowsAsync<BusinessException>(() => service.CheckoutAsync(s.Customer.Id, changed))).StatusCode);
         Assert.Empty(await s.Db.Orders.ToListAsync()); Assert.Equal(10, (await s.Db.Inventories.SingleAsync()).QuantityAvailable);
+    }
+
+    [Fact]
+    public async Task Changed_package_dimensions_invalidate_an_existing_quote()
+    {
+        await using var s = await Store.CreateAsync();
+        var quote = await s.Shipping.QuoteAsync(s.Customer.Id, new("42 Test Street", 1000001, "Hồ Chí Minh", 1003580, "Phường Thủ Đức"));
+        s.Product.PackageLengthCm = 31m;
+        await s.Db.SaveChangesAsync();
+
+        var request = new CheckoutRequest { ShippingAddress = quote.Destination, ShippingQuoteId = quote.Id, IdempotencyKey = "dimension-changed" };
+        var error = await Assert.ThrowsAsync<BusinessException>(() => new CommerceService(s.Db).CheckoutAsync(s.Customer.Id, request));
+        Assert.Equal(409, error.StatusCode);
+        Assert.Empty(await s.Db.Orders.ToListAsync());
+        Assert.Equal(10, (await s.Db.Inventories.SingleAsync()).QuantityAvailable);
     }
 }

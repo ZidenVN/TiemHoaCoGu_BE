@@ -1,6 +1,8 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using HoaSap.DAL;
+using HoaSap.Domain;
 using HoaSap.Domain.Entities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -30,15 +32,21 @@ public sealed class ShippingQuoteService(HoaSapDbContext db, ICarrierAdapter car
         var ids = groups.Select(x => x.ProductId).ToArray();
         var products = await db.Products.AsNoTracking().Where(x => ids.Contains(x.Id) && x.IsActive && !x.IsPreOrder).ToDictionaryAsync(x => x.Id, ct);
         if (products.Count != groups.Count) throw new BusinessException(400, "Sản phẩm không còn bán hoặc cần quy trình đặt riêng.");
-        var snapshot = groups.Select(x => (ProductId: x.ProductId, Quantity: x.Quantity, ShippingWeightGrams: products[x.ProductId].ShippingWeightGrams)).ToList();
-        var weight = snapshot.Sum(x => (decimal)x.Quantity * x.ShippingWeightGrams) / 1000m;
+        if (products.Values.Any(x => !PackagingSpecifications.IsConfirmedAndComplete(x)))
+            throw new BusinessException(503, "Thông số đóng gói thực tế của sản phẩm chưa đủ hoặc chưa được Admin xác nhận; chưa thể báo phí hay tạo đơn.");
+        var snapshot = groups.Select(x =>
+        {
+            var product = products[x.ProductId];
+            return (ProductId: x.ProductId, Quantity: x.Quantity, product.ShippingWeightGrams, product.PackageLengthCm, product.PackageWidthCm, product.PackageHeightCm, product.PackagingSpecsConfirmed);
+        }).ToList();
+        var weight = snapshot.Sum(x => (decimal)x.Quantity * x.ShippingWeightGrams!.Value) / 1000m;
         if (weight <= 0 || weight > 100000m) throw new BusinessException(400, "Trọng lượng kiện hàng không hợp lệ.");
         var cfg = options.Value;
         var origin = cfg.Origin?.Trim() ?? "";
         if (origin.Length == 0) throw new BusinessException(503, "Chưa cấu hình địa chỉ kho gửi hàng.");
         CarrierRateResult result;
         try { result = await carrier.QuoteAsync(new CarrierRateRequest(origin, destination, weight), ct); }
-        catch (InvalidOperationException) when (carrier is DisabledCarrier) { throw new BusinessException(503, "GHN staging chưa hỗ trợ báo giá theo danh mục tỉnh/phường mới; không tạo đơn."); }
+        catch (InvalidOperationException) when (carrier is DisabledCarrier) { throw new BusinessException(503, "Chưa có mapping phí GHN chính thức cho danh mục tỉnh/phường hiện tại; không tạo đơn."); }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException) { throw new BusinessException(503, "Chưa lấy được báo giá nhà vận chuyển."); }
         if (!result.Accepted || result.Amount < 0 || result.Amount > 1_000_000_000m || decimal.Round(result.Amount, 2) != result.Amount) throw new BusinessException(400, "Nhà vận chuyển không cung cấp báo giá hợp lệ.");
         var lifetime = cfg.QuoteLifetimeMinutes is >= 1 and <= 1440 ? cfg.QuoteLifetimeMinutes : 15;
@@ -48,6 +56,15 @@ public sealed class ShippingQuoteService(HoaSapDbContext db, ICarrierAdapter car
         return new(quote.Id, quote.Origin, quote.Destination, quote.Weight, quote.Amount, quote.ExpiresAt, quote.TrackingNumber);
     }
 
-    internal static string Fingerprint(IEnumerable<(Guid ProductId, int Quantity, int ShippingWeightGrams)> lines) =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("|", lines.OrderBy(x => x.ProductId).Select(x => $"{x.ProductId:N}:{x.Quantity}:{x.ShippingWeightGrams}")))));
+    internal static string Fingerprint(IEnumerable<(Guid ProductId, int Quantity, int? ShippingWeightGrams, decimal? PackageLengthCm, decimal? PackageWidthCm, decimal? PackageHeightCm, bool PackagingSpecsConfirmed)> lines) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("|", lines.OrderBy(x => x.ProductId).Select(x => string.Join(":",
+            x.ProductId.ToString("N"),
+            x.Quantity.ToString(CultureInfo.InvariantCulture),
+            x.ShippingWeightGrams?.ToString(CultureInfo.InvariantCulture) ?? "-",
+            FormatDimension(x.PackageLengthCm),
+            FormatDimension(x.PackageWidthCm),
+            FormatDimension(x.PackageHeightCm),
+            x.PackagingSpecsConfirmed ? "1" : "0"))))));
+
+    private static string FormatDimension(decimal? value) => value?.ToString("0.00", CultureInfo.InvariantCulture) ?? "-";
 }
