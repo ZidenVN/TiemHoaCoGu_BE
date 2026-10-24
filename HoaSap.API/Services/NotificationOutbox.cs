@@ -1,6 +1,6 @@
 using System.Net;
-using System.Net.Http.Json;
 using System.Net.Mail;
+using System.Text;
 using System.Text.Json;
 using HoaSap.DAL;
 using HoaSap.Domain;
@@ -29,9 +29,11 @@ public sealed class SmtpOptions
 }
 public sealed class SmsOptions
 {
-    public string Endpoint { get; set; } = "";
-    public string ApiKey { get; set; } = "";
-    public string Sender { get; set; } = "";
+    public string Mode { get; set; } = "Disabled";
+    public string TestAccountSid { get; set; } = "";
+    public string TestAuthToken { get; set; } = "";
+    public const string TestFrom = "+15005550006";
+    public const string TestTo = "+12025550123";
 }
 
 public interface INotificationTransport
@@ -64,7 +66,10 @@ public sealed class SmtpNotificationTransport(IOptions<NotificationOptions> sett
 {
     private readonly NotificationOptions options = settings.Value;
     public NotificationChannel Channel => NotificationChannel.Email;
-    public bool Enabled => options.EmailEnabled && !string.IsNullOrWhiteSpace(options.Smtp.Host) && !string.IsNullOrWhiteSpace(options.Smtp.From);
+    public bool Enabled => options.EmailEnabled && string.Equals(options.Smtp.Host, "sandbox.smtp.mailtrap.io", StringComparison.OrdinalIgnoreCase)
+        && options.Smtp.Port is > 0 and <= 65535 && options.Smtp.EnableSsl
+        && !string.IsNullOrWhiteSpace(options.Smtp.Username) && !string.IsNullOrWhiteSpace(options.Smtp.Password)
+        && MailAddress.TryCreate(options.Smtp.From, out var from) && from.Host.EndsWith(".test", StringComparison.OrdinalIgnoreCase);
     public async Task SendAsync(NotificationOutbox message, CancellationToken ct)
     {
         if (!Enabled) throw new InvalidOperationException("Email transport is disabled");
@@ -81,22 +86,61 @@ public sealed class SmtpNotificationTransport(IOptions<NotificationOptions> sett
         try { using var doc = JsonDocument.Parse(json); return doc.RootElement.TryGetProperty("recoveryUrl", out var url) ? $"Vui lòng mở liên kết khôi phục: {url.GetString()}" : $"Tiệm Hoa Có Gu: {doc.RootElement.GetProperty("code").GetString()} — trạng thái: {doc.RootElement.GetProperty("status").GetString()}."; }
         catch (JsonException) { return "Có cập nhật mới từ Tiệm Hoa Có Gu."; }
     }
+
+    internal static string RenderSmsBody(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.TryGetProperty("recoveryUrl", out _)) return "Tiệm Hoa Có Gu: bản thử nghiệm yêu cầu khôi phục tài khoản; liên kết được lược bỏ.";
+            return $"Tiệm Hoa Có Gu: {doc.RootElement.GetProperty("code").GetString()} — trạng thái: {doc.RootElement.GetProperty("status").GetString()}.";
+        }
+        catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            return "Tiệm Hoa Có Gu: có cập nhật thử nghiệm; không kèm thông tin khôi phục.";
+        }
+    }
 }
-public sealed class HttpsSmsNotificationTransport(IHttpClientFactory clients, IOptions<NotificationOptions> settings) : INotificationTransport
+/// <summary>Twilio's Test Credentials transport. It can simulate API acceptance only; no real SMS is sent.</summary>
+public sealed class TwilioSmsNotificationTransport(IHttpClientFactory clients, IOptions<NotificationOptions> settings) : INotificationTransport
 {
     private readonly NotificationOptions options = settings.Value;
     public NotificationChannel Channel => NotificationChannel.Sms;
-    public bool Enabled => options.SmsEnabled && Uri.TryCreate(options.Sms.Endpoint, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps && !string.IsNullOrWhiteSpace(options.Sms.ApiKey);
+    public bool Enabled => options.SmsEnabled && string.Equals(options.Sms.Mode, "Test", StringComparison.Ordinal)
+        && options.Sms.TestAccountSid.Length == 34 && options.Sms.TestAccountSid.StartsWith("AC", StringComparison.Ordinal)
+        && options.Sms.TestAccountSid.AsSpan(2).ToString().All(Uri.IsHexDigit)
+        && !string.IsNullOrWhiteSpace(options.Sms.TestAuthToken);
     public async Task SendAsync(NotificationOutbox message, CancellationToken ct)
     {
-        if (!Enabled) throw new InvalidOperationException("SMS transport is disabled");
-        using var request = new HttpRequestMessage(HttpMethod.Post, options.Sms.Endpoint);
-        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", options.Sms.ApiKey);
-        request.Headers.Add("Idempotency-Key", message.Id.ToString("N"));
-        request.Content = JsonContent.Create(new { to = message.Destination, sender = options.Sms.Sender, text = SmtpNotificationTransport.RenderBody(message.PayloadJson) });
-        using var response = await clients.CreateClient("notifications").SendAsync(request, ct);
-        if (!response.IsSuccessStatusCode)
-            throw new NotificationDeliveryException($"Notification provider returned an unconfirmed delivery response ({(int)response.StatusCode})", true);
+        if (!Enabled) throw new InvalidOperationException("Twilio Test Credentials transport is disabled or incompletely configured");
+        var path = $"https://api.twilio.com/2010-04-01/Accounts/{options.Sms.TestAccountSid}/Messages.json";
+        using var request = new HttpRequestMessage(HttpMethod.Post, path);
+        var credentials = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{options.Sms.TestAccountSid}:{options.Sms.TestAuthToken}"));
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Basic", credentials);
+        request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["To"] = SmsOptions.TestTo,
+            ["From"] = SmsOptions.TestFrom,
+            ["Body"] = SmtpNotificationTransport.RenderSmsBody(message.PayloadJson)
+        });
+        HttpResponseMessage response;
+        try { response = await clients.CreateClient("notifications").SendAsync(request, ct); }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException)
+        { throw new NotificationDeliveryException("Twilio test request outcome unknown", true, ex); }
+        using (response)
+        {
+            if (response.StatusCode == HttpStatusCode.RequestTimeout || (int)response.StatusCode == 429 || (int)response.StatusCode >= 500)
+                throw new NotificationDeliveryException($"Twilio test request outcome unknown ({(int)response.StatusCode})", true);
+            if (!response.IsSuccessStatusCode)
+                throw new NotificationDeliveryException($"Twilio test request rejected ({(int)response.StatusCode})", false);
+            try
+            {
+                using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+                if (!document.RootElement.TryGetProperty("sid", out var sid) || string.IsNullOrWhiteSpace(sid.GetString()))
+                    throw new NotificationDeliveryException("Twilio test response did not confirm API acceptance", true);
+            }
+            catch (JsonException ex) { throw new NotificationDeliveryException("Twilio test response was invalid; outcome unknown", true, ex); }
+        }
     }
 }
 

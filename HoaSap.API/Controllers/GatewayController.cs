@@ -3,12 +3,20 @@ using HoaSap.BLL;
 using HoaSap.BLL.Commerce;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Options;
 
 namespace HoaSap.API.Controllers;
 
 [ApiController, Route("api/gateway")]
-public sealed class GatewayController(GatewayPaymentService payments, GatewayReconciliationService reconciliation) : ControllerBase
+public sealed class GatewayController(GatewayPaymentService payments, GatewayReconciliationService reconciliation, IOptions<CommerceGatewayOptions> gatewayOptions) : ControllerBase
 {
+    [HttpGet("availability"), AllowAnonymous]
+    public object Availability()
+    {
+        try { gatewayOptions.Value.Validate(); return new { provider = gatewayOptions.Value.Provider, ready = true, sandbox = gatewayOptions.Value.Provider == "MomoSandbox" }; }
+        catch (InvalidOperationException) { return new { provider = gatewayOptions.Value.Provider, ready = false, sandbox = true }; }
+    }
+
     [HttpPost("orders/{orderId:guid}/charge"), Authorize]
     public Task<CheckoutPaymentResponse> Charge(Guid orderId, GatewayPaymentRequest request, CancellationToken ct)
     {
@@ -26,6 +34,9 @@ public sealed class GatewayController(GatewayPaymentService payments, GatewayRec
     [HttpGet("reconciliation"), Authorize(Roles = "Admin")]
     public Task<IReadOnlyList<PaymentReconciliationDto>> ReconciliationQueue(CancellationToken ct) => reconciliation.ListAsync(ct);
 
+    [HttpPost("reconciliation/{id:guid}/query"), Authorize(Roles = "Admin")]
+    public Task<GatewayPaymentQueryResult> Query(Guid id, CancellationToken ct) => payments.QueryAsync(id, ct);
+
     [HttpPost("reconciliation/{id:guid}"), Authorize(Roles = "Admin")]
     public Task<PaymentReconciliationDto> Reconcile(Guid id, PaymentReconciliationInput input, CancellationToken ct) => reconciliation.ReconcileAsync(id, input, ct);
 
@@ -33,7 +44,7 @@ public sealed class GatewayController(GatewayPaymentService payments, GatewayRec
     public async Task<IActionResult> Webhook(CancellationToken ct)
     {
         using var stream = new MemoryStream(); await Request.Body.CopyToAsync(stream, ct);
-        var result = await payments.WebhookAsync(stream.ToArray(), Request.Headers["X-Signature"].FirstOrDefault(), Request.Headers["X-Timestamp"].FirstOrDefault(), ct);
-        return Ok(result);
+        await payments.WebhookAsync(stream.ToArray(), Request.Headers["X-Signature"].FirstOrDefault(), Request.Headers["X-Timestamp"].FirstOrDefault(), ct);
+        return NoContent();
     }
 }
