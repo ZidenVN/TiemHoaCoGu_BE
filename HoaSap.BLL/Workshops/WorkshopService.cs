@@ -12,7 +12,7 @@ namespace HoaSap.BLL.Workshops;
 public sealed class WorkshopService(HoaSapDbContext db)
 {
     private const decimal DepositRate = 0.30m;
-    private static readonly string[] ManualMethods = ["Cash", "BankTransfer"];
+    private static readonly string[] ManualMethods = ["Cash", "BankTransfer", "MoMo"];
     private static readonly TimeZoneInfo VietnamTimeZone = TimeZoneInfo.FindSystemTimeZoneById("Asia/Ho_Chi_Minh");
 
     public async Task<IReadOnlyList<WorkshopListDto>> ListAsync(bool staff = false, CancellationToken ct = default) =>
@@ -176,6 +176,61 @@ public sealed class WorkshopService(HoaSapDbContext db)
         var refundable = paid - reservedRefunds;
         if (refundable > 0) db.Refunds.Add(new Refund { BookingId = b.Id, RefundAmount = refundable, RefundReason = "Yêu cầu hoàn do hủy booking", RefundStatus = "Requested", ApprovedBy = "", ProcessedAt = null });
         await db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+    }
+
+    public async Task RecordBookingPaymentAsync(Guid bookingId, ManualPaymentRequest r, Guid userId, bool isStaff, CancellationToken ct = default)
+    {
+        var paymentMethod = r.PaymentMethod?.Trim() ?? "";
+        if (string.IsNullOrWhiteSpace(r.TransactionCode) || r.TransactionCode.Trim().Length > 100 || !ManualMethods.Contains(paymentMethod, StringComparer.OrdinalIgnoreCase) || r.Amount <= 0 || r.Amount > 1000000000000m || decimal.Round(r.Amount, 2) != r.Amount)
+            throw new BusinessException(400, "Thanh toán không hợp lệ.");
+
+        await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+        var existing = await db.Payments.FirstOrDefaultAsync(x => x.TransactionCode == r.TransactionCode.Trim(), ct);
+        if (existing != null)
+        {
+            if (existing.BookingId == bookingId && existing.PaymentMethod.Equals(paymentMethod, StringComparison.OrdinalIgnoreCase) && existing.Amount == r.Amount)
+            {
+                await tx.CommitAsync(ct);
+                return;
+            }
+            throw new BusinessException(409, "Mã giao dịch đã được dùng cho dữ liệu khác.");
+        }
+
+        var b = await db.WorkshopBookings.FirstOrDefaultAsync(x => x.Id == bookingId, ct) ?? throw new BusinessException(404, "Không tìm thấy booking.");
+
+        if (!isStaff && b.CustomerId.HasValue && userId != Guid.Empty && b.CustomerId.Value != userId)
+            throw new BusinessException(403, "Bạn không có quyền thanh toán booking của tài khoản khác.");
+
+        var s = await db.WorkshopSessions.FirstOrDefaultAsync(x => x.Id == b.SessionId, ct) ?? throw new BusinessException(404, "Không tìm thấy ca học.");
+        var w = await db.Workshops.FirstOrDefaultAsync(x => x.Id == s.WorkshopId, ct) ?? throw new BusinessException(404, "Không tìm thấy workshop.");
+        if (!w.IsActive || s.SessionStatus is "Cancelled" or "Closed" || b.BookingStatus is "expired" or "cancelled" or "attended" or "no_show" || (b.BookingStatus == "pending" && b.HoldExpiresAt <= DateTime.UtcNow) || SessionStartUtc(s) <= DateTime.UtcNow)
+            throw new BusinessException(409, "Booking không còn hiệu lực để thanh toán.");
+
+        var paid = await PaidAmountAsync(b.Id, ct);
+        var after = paid + r.Amount;
+        if (paid == 0 && r.Amount < b.DepositAmount) throw new BusinessException(400, "Lần thanh toán đầu phải đủ tiền cọc tối thiểu.");
+        if (paid > 0 && DateTime.UtcNow >= SessionStartUtc(s).AddHours(-24)) throw new BusinessException(409, "Đã quá hạn thanh toán phần còn lại trước buổi học 24 giờ; cần nhân viên xử lý ngoại lệ ngoài hệ thống.");
+        if (paid == 0 && DateTime.UtcNow >= SessionStartUtc(s).AddHours(-24) && r.Amount < b.TotalAmount) throw new BusinessException(409, "Booking trong 24 giờ trước buổi học phải thanh toán đủ ngay lần đầu.");
+        if (after > b.TotalAmount) throw new BusinessException(400, "Số tiền thanh toán vượt quá tổng booking.");
+
+        var payment = new Payment
+        {
+            BookingId = b.Id,
+            TransactionCode = r.TransactionCode.Trim(),
+            PaymentType = paid == 0 ? "Deposit" : "Remaining",
+            PaymentMethod = paymentMethod,
+            Amount = r.Amount,
+            PaymentStatus = "Paid",
+            PaidAt = DateTime.UtcNow,
+            PaymentGatewayResponse = isStaff ? "Manual staff record" : "Customer online transfer confirmation",
+            RecordedBy = isStaff && userId != Guid.Empty ? userId : (b.CustomerId ?? (userId != Guid.Empty ? userId : null))
+        };
+        db.Payments.Add(payment);
+        b.RemainingAmount = Math.Max(0, b.TotalAmount - after);
+        if (after >= b.DepositAmount) b.BookingStatus = "confirmed";
+
+        await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
     }
 
     public async Task RecordPaymentAsync(Guid? bookingId, Guid? orderId, ManualPaymentRequest r, Guid staffId, CancellationToken ct = default)
