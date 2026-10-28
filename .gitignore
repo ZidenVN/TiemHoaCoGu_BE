@@ -57,3 +57,7 @@ artifacts/
 __pycache__/
 *.py[cod]
 **/App_Data/keys/
+
+# Local dev credentials
+*credentials*.md
+docs/*credentials*.md
