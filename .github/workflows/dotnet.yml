@@ -36,6 +36,15 @@ jobs:
       - run: dotnet build HoaSap.sln -c Release --no-restore
       - run: dotnet test HoaSap.Tests/HoaSap.Tests.csproj -c Release --no-build --logger "trx;LogFileName=ci-results.trx" --results-directory artifacts/test-results
       - run: python3 scripts/verify-test-results.py artifacts/test-results/ci-results.trx
+      - name: Verify non-root Docker runtime permissions
+        run: |
+          docker build --tag hoasap-api:ci .
+          docker run --rm --entrypoint /bin/sh hoasap-api:ci -ceu '
+            test "$(id -u)" = "1654"
+            for settings in /app/appsettings*.json; do test -r "$settings"; done
+            test -w /app/App_Data/media
+            printf smoke > /app/App_Data/media/.permission-smoke
+          '
       - uses: actions/upload-artifact@v4
         if: always()
         with:

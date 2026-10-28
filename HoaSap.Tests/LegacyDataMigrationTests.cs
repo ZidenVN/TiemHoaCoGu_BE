@@ -43,7 +43,10 @@ public sealed class LegacyDataMigrationTests
                 var payment = await verify.Payments.SingleAsync(); Assert.Equal(150000m, payment.Amount); Assert.Equal("Paid", payment.PaymentStatus);
                 var inventory = await verify.Inventories.SingleAsync(); Assert.Equal(8, inventory.QuantityAvailable); Assert.Equal(2, inventory.QuantityReserved);
                 Assert.Equal(1, (await verify.Vouchers.SingleAsync()).UsedCount);
-                Assert.Equal(500, (await verify.Products.SingleAsync()).ShippingWeightGrams);
+                var legacyProduct = await verify.Products.SingleAsync();
+                Assert.Null(legacyProduct.ShippingWeightGrams);
+                Assert.Null(legacyProduct.PackageLengthCm); Assert.Null(legacyProduct.PackageWidthCm); Assert.Null(legacyProduct.PackageHeightCm);
+                Assert.False(legacyProduct.PackagingSpecsConfirmed);
                 Assert.Empty(await verify.GatewayPaymentIntents.ToListAsync());
                 Assert.Empty(await verify.Set<RefreshToken>().ToListAsync());
                 Assert.Empty(await verify.Set<CustomQuotationRevision>().ToListAsync());

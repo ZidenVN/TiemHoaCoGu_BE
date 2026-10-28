@@ -7,6 +7,7 @@ using HoaSap.DAL.Auditing;
 using HoaSap.Domain.Entities;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using Xunit;
 using Xunit.Abstractions;
 
@@ -23,6 +24,12 @@ public sealed class SqlServerBulkAuditTests
         public Guid? ActorId { get; } = id;
         public string? Role { get; } = role;
         public string? TraceId { get; } = traceId;
+    }
+
+    private sealed class SyntheticSqlCarrier : ICarrierAdapter
+    {
+        public Task<CarrierRateResult> QuoteAsync(CarrierRateRequest request, CancellationToken ct = default) =>
+            Task.FromResult(new CarrierRateResult(true, 42000m, null, null));
     }
 
     private sealed record Seed(Guid CustomerId, Guid ProductId, Guid InventoryId, Guid VoucherId, string VoucherCode);
@@ -97,7 +104,8 @@ public sealed class SqlServerBulkAuditTests
         await using var db = fixture.CreateContext();
         var seed = await SeedAsync(db, stock: 2, voucherLimit: 3);
         var service = new CommerceService(db);
-        var request = Request(seed.ProductId, seed.VoucherCode);
+        var quote = await QuoteAsync(db, seed.CustomerId, seed.ProductId);
+        var request = Request(seed.ProductId, quote, seed.VoucherCode);
         request.IdempotencyKey = "checkout-replay";
 
         var order = await service.CheckoutAsync(seed.CustomerId, request);
@@ -123,7 +131,8 @@ public sealed class SqlServerBulkAuditTests
         var seed = await SeedAsync(db, stock: 1);
         var service = new CommerceService(db);
 
-        var error = await Assert.ThrowsAsync<BusinessException>(() => service.CheckoutAsync(seed.CustomerId, Request(seed.ProductId, "NOT-A-VOUCHER")));
+        var quote = await QuoteAsync(db, seed.CustomerId, seed.ProductId);
+        var error = await Assert.ThrowsAsync<BusinessException>(() => service.CheckoutAsync(seed.CustomerId, Request(seed.ProductId, quote, "NOT-A-VOUCHER")));
 
         Assert.Equal(400, error.StatusCode);
         var inventory = await db.Inventories.SingleAsync(x => x.Id == seed.InventoryId);
@@ -141,7 +150,8 @@ public sealed class SqlServerBulkAuditTests
         await using var db = fixture.CreateContext();
         var seed = await SeedAsync(db, stock: 1);
         var service = new CommerceService(db);
-        var order = await service.CheckoutAsync(seed.CustomerId, Request(seed.ProductId));
+        var quote = await QuoteAsync(db, seed.CustomerId, seed.ProductId);
+        var order = await service.CheckoutAsync(seed.CustomerId, Request(seed.ProductId, quote));
 
         await service.CancelAsync(seed.CustomerId, order.Id);
         await service.CancelAsync(seed.CustomerId, order.Id);
@@ -162,7 +172,8 @@ public sealed class SqlServerBulkAuditTests
         await using var db = fixture.CreateContext();
         var seed = await SeedAsync(db, stock: 1);
         var service = new CommerceService(db);
-        var order = await service.CheckoutAsync(seed.CustomerId, Request(seed.ProductId));
+        var quote = await QuoteAsync(db, seed.CustomerId, seed.ProductId);
+        var order = await service.CheckoutAsync(seed.CustomerId, Request(seed.ProductId, quote));
         var itemId = order.Items.Single().Id;
         await service.TransitionAsync(order.Id, "Processing");
         var delivery = await service.DeliveryAsync(order.Id, new DeliveryRequest { Items = [new DeliveryLineRequest { OrderItemId = itemId, Quantity = 1 }] });
@@ -192,7 +203,8 @@ public sealed class SqlServerBulkAuditTests
         await using var db = fixture.CreateContext();
         var seed = await SeedAsync(db, stock: 1);
         var commerce = new CommerceService(db);
-        var order = await commerce.CheckoutAsync(seed.CustomerId, Request(seed.ProductId));
+        var quote = await QuoteAsync(db, seed.CustomerId, seed.ProductId);
+        var order = await commerce.CheckoutAsync(seed.CustomerId, Request(seed.ProductId, quote));
         db.Payments.Add(new Payment { OrderId = order.Id, TransactionCode = $"PAY-{Guid.NewGuid():N}", PaymentMethod = "Cash", PaymentType = "Order", Amount = order.TotalAmount, PaymentStatus = "Paid", PaidAt = DateTime.UtcNow });
         var paidOrder = await db.Orders.SingleAsync(x => x.Id == order.Id);
         paidOrder.PaymentStatus = "Paid";
@@ -243,7 +255,8 @@ public sealed class SqlServerBulkAuditTests
         await using var db = fixture.CreateContext();
         var first = await SeedAsync(db, stock: 5, voucherLimit: 1);
         var category = new Category { Code = $"CAT-{Guid.NewGuid():N}", Name = "Race" };
-        var product = new Product { CategoryId = category.Id, Code = $"PROD-{Guid.NewGuid():N}", Name = "Race product", Price = 100m, IsActive = true };
+        // Synthetic package values exist only for the isolated fake-carrier concurrency test.
+        var product = new Product { CategoryId = category.Id, Code = $"PROD-{Guid.NewGuid():N}", Name = "Race product", Price = 100m, ShippingWeightGrams = 500, PackageLengthCm = 30m, PackageWidthCm = 20m, PackageHeightCm = 10m, PackagingSpecsConfirmed = true, IsActive = true };
         db.Categories.Add(category); db.Products.Add(product); db.Inventories.Add(new Inventory { ProductId = product.Id, QuantityAvailable = 5 });
         var secondCustomer = new Customer { Email = $"voucher2-{Guid.NewGuid():N}@example.test", FullName = "Second", PhoneNumber = "0900000003", PasswordHash = "test" };
         db.Customers.Add(secondCustomer); await db.SaveChangesAsync(); db.ChangeTracker.Clear();
@@ -291,7 +304,8 @@ public sealed class SqlServerBulkAuditTests
     private static async Task<Seed> SeedAsync(HoaSapDbContext db, int stock, int voucherLimit = 10)
     {
         var category = new Category { Code = $"CAT-{Guid.NewGuid():N}", Name = "Integration" };
-        var product = new Product { CategoryId = category.Id, Code = $"PROD-{Guid.NewGuid():N}", Name = "Integration flower", Price = 100m, IsActive = true };
+        // Synthetic package values exist only for this SQL integration fixture and its fake carrier.
+        var product = new Product { CategoryId = category.Id, Code = $"PROD-{Guid.NewGuid():N}", Name = "Integration flower", Price = 100m, ShippingWeightGrams = 500, PackageLengthCm = 30m, PackageWidthCm = 20m, PackageHeightCm = 10m, PackagingSpecsConfirmed = true, IsActive = true };
         var inventory = new Inventory { ProductId = product.Id, QuantityAvailable = stock };
         var voucher = new Voucher { Code = $"V-{Guid.NewGuid():N}", Description = "Integration voucher", DiscountType = "FixedAmount", DiscountValue = 10m, StartDate = DateTime.UtcNow.AddHours(-1), EndDate = DateTime.UtcNow.AddHours(1), UsageLimit = voucherLimit, IsActive = true };
         var customer = new Customer { Email = $"customer-{Guid.NewGuid():N}@example.test", FullName = "Integration Customer", PhoneNumber = "0900000001", PasswordHash = "test" };
@@ -301,7 +315,13 @@ public sealed class SqlServerBulkAuditTests
         return new(customer.Id, product.Id, inventory.Id, voucher.Id, voucher.Code);
     }
 
-    private static CheckoutRequest Request(Guid productId, string? voucher = null) => new() { ShippingAddress = "SQL integration", VoucherCode = voucher, Items = [new CartItemRequest { ProductId = productId, Quantity = 1 }] };
+    private static async Task<ShippingQuoteDto> QuoteAsync(HoaSapDbContext db, Guid customerId, Guid productId, int quantity = 1)
+    {
+        var service = new ShippingQuoteService(db, new SyntheticSqlCarrier(), Options.Create(new CarrierOptions { Origin = "Synthetic SQL test warehouse" }));
+        return await service.QuoteAsync(customerId, new ShippingQuoteRequest("SQL integration street", 1000001, "Hồ Chí Minh", 1003580, "Phường Thủ Đức", Items: [new CartItemRequest { ProductId = productId, Quantity = quantity }]));
+    }
+
+    private static CheckoutRequest Request(Guid productId, ShippingQuoteDto quote, string? voucher = null) => new() { ShippingAddress = quote.Destination, ShippingQuoteId = quote.Id, VoucherCode = voucher, Items = [new CartItemRequest { ProductId = productId, Quantity = 1 }] };
 
     private static async Task<List<Audit>> AuditsAsync(HoaSapDbContext db, Guid entityId) => await db.AuditLogs.AsNoTracking().Where(x => x.EntityId == entityId.ToString() && x.Action == "Modified").OrderBy(x => x.OccurredAtUtc).Select(x => new Audit(x.EntityType, x.EntityId, x.Action, x.OldValuesJson, x.NewValuesJson, x.ActorId, x.ActorRole, x.TraceId)).ToListAsync();
 
@@ -340,8 +360,9 @@ public sealed class SqlServerBulkAuditTests
     {
         await using var db = fixture.CreateContext();
         var service = new CommerceService(db);
+        var quote = await QuoteAsync(db, customerId, productId);
         await barrier.ArriveAndWaitAsync();
-        try { await service.CheckoutAsync(customerId, Request(productId, voucher)); return new(true, productId, null); }
+        try { await service.CheckoutAsync(customerId, Request(productId, quote, voucher)); return new(true, productId, null); }
         catch (Exception ex) when (ex is BusinessException || IsDeadlock(ex) || ex is DbUpdateException) { return new(false, productId, ex); }
     }
 

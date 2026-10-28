@@ -9,7 +9,15 @@
 - Thêm SQL test tranh ghế cuối bằng context/service độc lập, replay booking và hủy lặp/audit. Thử thêm qua **hai process API Release thật**: **5/5 vòng đạt**, mỗi vòng đúng một `200` và một `409`, replay cùng id, nhả ghế đúng một lần. Lượt đầu phát hiện lỗi EF bọc SQL deadlock thành 500; middleware đã nhận diện inner exception để trả 409, không tự chạy lại transaction. [Kết quả hai process](../deployment/results/workshop-race.json).
 - Drill full backup/restore SQL Server vào DB mới đạt: schema/migrations, dữ liệu mẫu và audit giữ nguyên; media khớp SHA-256; token giải mã được bằng key ring đã phục hồi. SQL dùng đường dẫn phía server để hỗ trợ CI container. Đây **không phải** drill snapshot/volume/khóa mã hóa trên staging thật.
 
-Provider thanh toán–vận chuyển–SMTP/SMS thật và cân nặng đóng gói SKU vẫn để sau theo yêu cầu. Không tạo merchant/secrets/trọng lượng giả, không merge, không deploy và không tuyên bố sẵn sàng production. Số liệu bên dưới là kết quả lịch sử trước bổ sung này, không phải lượt acceptance mới.
+Các số liệu trong phần dưới là acceptance lịch sử. Branch sandbox follow-up bên dưới có lượt kiểm tra mới riêng; không tạo production credentials, không gọi provider thật, không deploy và không merge PR.
+
+## Sandbox follow-up — kiểm tra local
+
+Đã thêm MoMo sandbox payment/refund/query/IPN; Admin reconciliation tự query MoMo lần nữa trước khi ghi sổ và bỏ qua mã/evidence từ client. Twilio test transport bỏ URL/token khôi phục khỏi SMS body; Mailtrap chỉ bật đúng Email Sandbox; notification `Unknown` có Admin reconciliation/audit. GHN v3 province/ward catalog đã được tích hợp read-only với fixed staging host và fail-closed config; fee adapter vẫn `Disabled` vì không có mapping chính thức từ tỉnh/phường mới sang district/ward legacy. Packaging migration bỏ mặc định 500 g cho SKU mới, thêm kích thước nullable và cờ xác nhận mặc định false; số cũ được giữ nhưng không xác minh. Admin có thể nhập cân nặng/kích thước thật, API kiểm tra xác nhận/độ chính xác, quote fingerprint chứa đủ số đo, và quote/checkout từ chối SKU thiếu xác nhận. Client CMS cũ không gửi field mới thì không làm mất dữ liệu; gửi null rõ ràng mới xóa. Không có vận đơn nào được tạo.
+
+Lượt mới nhất: `dotnet test HoaSap.sln -c Release` đạt **214 passed, 12 skipped, 0 failed** (226 total). 12 test SQL Server bị skip vì sandbox này không có `HOASAP_TEST_SQLSERVER`; không tính là đạt. EF không có pending model changes; SQL script được sinh nhưng không áp dụng. FE lint, typecheck, **32/32 unit tests**, Prettier, production build và preview E2E **30/30** đều đạt. Test không gọi payment, email hoặc SMS provider; Mailtrap Email Sandbox đã nhận một email `.test` tổng hợp ở lần smoke test trước. GHN staging catalog chỉ đọc được xác minh, nhưng báo phí/vận đơn vẫn khóa do chưa có mapping chính thức cho địa giới mới. MoMo M4B còn bước kinh doanh/pháp lý của chủ tài khoản; Twilio Test Credentials chưa được cấp.
+
+Đây mới là bằng chứng local. GHN fee quote/create/cancel/tracking vẫn bị khóa; SQL Server/volume/key-ring snapshot restore trên staging, migration/rollback rehearsal và k6/load acceptance với ngưỡng được team duyệt vẫn chờ hạ tầng, credentials, fixture và quyết định của owner. Các artifacts local trong `deployment/results/` không phải chứng nhận staging.
 
 ## Kết quả chính
 
@@ -39,4 +47,4 @@ Smoke-load chạy hai process Release dùng chung SQL Server: **1.200/1.200 requ
 
 ## Cần làm trước khi bán thật
 
-Chưa thu/hoàn tiền hoặc gửi email/SMS thật. Adapter hiện là HTTPS/HMAC tổng quát, chưa phải kết nối provider cụ thể. Cần chọn provider/bridge tương thích, cấp merchant/secrets, cấu hình URL HTTPS/SMTP/SMS, cân trọng lượng SKU, shared media/key ring và thử giao dịch sandbox đầu-cuối. Tạo vận đơn/tracking tự động theo hãng, S3/CDN và lịch backup hạ tầng không nằm trong triển khai hiện tại. Kết quả local không khẳng định CI đã xanh hoặc hệ thống đã sẵn sàng production. Xem [runbook](operations.md).
+Chưa thu/hoàn tiền hoặc gửi email/SMS thật. MoMo có adapter sandbox nhưng chưa có provider smoke test; Mailtrap/Twilio test mode không được gọi trong lượt xác minh này, và Twilio Test Credentials còn thiếu. GHN province/ward catalog chỉ đọc được; fee adapter và checkout bị disable. Cần mapping phí được GHN xác nhận cùng cân nặng/kích thước thực tế từng SKU; sau đó mới chạy end-to-end, restore rehearsal, migration rollback và load tests theo ngưỡng owner duyệt. Kết quả local không khẳng định CI đã xanh hoặc hệ thống sẵn sàng staging/production. Xem [runbook](operations.md).

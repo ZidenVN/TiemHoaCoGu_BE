@@ -10,18 +10,35 @@ namespace HoaSap.BLL.Commerce;
 
 public class CommerceGatewayOptions
 {
+    public string Provider { get; set; } = "GenericSignedGateway";
     public string? Endpoint { get; set; }
     public string? Secret { get; set; }
     public string? MerchantId { get; set; }
+    public string MomoPartnerCode { get; set; } = "";
+    public string MomoAccessKey { get; set; } = "";
+    public string MomoSecretKey { get; set; } = "";
+    public string MomoIpnUrl { get; set; } = "";
     public int TimeoutSeconds { get; set; } = 15;
     public string[] AllowedReturnOrigins { get; set; } = [];
     public string[] ReturnUrlAllowlist { get => AllowedReturnOrigins; set => AllowedReturnOrigins = value ?? []; }
     public virtual void Validate()
     {
-        ValidateTransport();
+        if (Provider == "MomoSandbox") ValidateMomoSandbox();
+        else if (Provider == "GenericSignedGateway") ValidateTransport();
+        else throw new InvalidOperationException("Unsupported payment provider; only MoMo sandbox or the explicitly configured generic test adapter is allowed.");
         if (AllowedReturnOrigins.Length == 0 || AllowedReturnOrigins.Any(x => !Uri.TryCreate(x, UriKind.Absolute, out var u) || u.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(u.PathAndQuery.Trim('/'))))
             throw new InvalidOperationException("Commerce gateway return URL allowlist is required and must contain HTTPS origins only.");
     }
+    private void ValidateMomoSandbox()
+    {
+        if (string.IsNullOrWhiteSpace(MomoPartnerCode) || string.IsNullOrWhiteSpace(MomoAccessKey) || string.IsNullOrWhiteSpace(MomoSecretKey) || string.IsNullOrWhiteSpace(MomoIpnUrl))
+            throw new InvalidOperationException("MoMo sandbox is not configured; no payment request was sent.");
+        if (TimeoutSeconds is < 30 or > 120) throw new InvalidOperationException("MoMo API timeout must be between 30 and 120 seconds.");
+        if (!Uri.TryCreate(MomoIpnUrl, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(uri.UserInfo) || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment) || IsReservedTestHost(uri.Host) || IPAddress.TryParse(uri.Host, out var ip) && IsUnsafeIp(ip))
+            throw new InvalidOperationException("MoMo sandbox IPN URL must be a publicly reachable HTTPS URL.");
+    }
+    static bool IsReservedTestHost(string host) => new[] { ".test", ".example", ".invalid", ".localhost", ".local", ".internal", ".lan" }.Any(s => host.Equals(s[1..], StringComparison.OrdinalIgnoreCase) || host.EndsWith(s, StringComparison.OrdinalIgnoreCase));
+    static bool IsUnsafeIp(IPAddress ip) => IsPrivate(ip) || ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 && (ip.IsIPv6LinkLocal || ip.IsIPv6SiteLocal || (ip.GetAddressBytes()[0] & 0xfe) == 0xfc || ip.GetAddressBytes()[0] == 0xff);
     protected void ValidateTransport()
     {
         if (string.IsNullOrWhiteSpace(Endpoint) || string.IsNullOrWhiteSpace(Secret) || string.IsNullOrWhiteSpace(MerchantId))
@@ -37,21 +54,30 @@ public class CommerceGatewayOptions
     static bool IsPrivate(IPAddress ip) { var b = ip.GetAddressBytes(); return ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && (b[0] == 10 || b[0] == 127 || b[0] == 169 && b[1] == 254 || b[0] == 172 && b[1] >= 16 && b[1] <= 31 || b[0] == 192 && b[1] == 168); }
 }
 
-public sealed class CarrierOptions : CommerceGatewayOptions { public override void Validate() => ValidateTransport(); public string Origin { get; set; } = ""; public int QuoteLifetimeMinutes { get; set; } = 15; }
+public sealed class CarrierOptions : CommerceGatewayOptions { public CarrierOptions() => Provider = "Disabled"; public override void Validate() => ValidateTransport(); public string Origin { get; set; } = ""; public int QuoteLifetimeMinutes { get; set; } = 15; }
 public sealed record GatewayChargeRequest(Guid OrderId, decimal Amount, string Currency, string ReturnUrl, string ProviderKey = "");
 public sealed record GatewayChargeResult(bool Accepted, string TransactionCode, string? RedirectUrl, string? RawResponse);
 public sealed record GatewayRefundRequest(Guid RefundId, decimal Amount, string Currency, string OriginalTransactionCode);
 public sealed record GatewayRefundResult(bool Accepted, string TransactionCode, string? RawResponse);
+public sealed record GatewayPaymentQueryResult(string Outcome, int ResultCode, string ProviderOrderId, string RequestId, decimal Amount, string TransactionCode, string Message, long ResponseTime);
 public sealed record CarrierRateRequest(string Origin, string Destination, decimal Weight);
 public sealed record CarrierRateResult(bool Accepted, decimal Amount, string? TrackingNumber, string? RawResponse);
 
 public interface IPaymentGateway
 {
+    string PaymentMethod => "GenericSignedGateway";
     Task<GatewayChargeResult> ChargeAsync(GatewayChargeRequest request, CancellationToken ct = default);
     Task<GatewayRefundResult> RefundAsync(GatewayRefundRequest request, CancellationToken ct = default);
+    Task<GatewayPaymentQueryResult> QueryAsync(string providerKey, decimal expectedAmount, CancellationToken ct = default) => Task.FromException<GatewayPaymentQueryResult>(new NotSupportedException("Provider transaction query is unavailable."));
     bool VerifyWebhook(ReadOnlySpan<byte> payload, string? signature, string? timestamp);
+    GatewayWebhookRequest ParseWebhook(ReadOnlySpan<byte> payload) => JsonSerializer.Deserialize<GatewayWebhookRequest>(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? throw new JsonException("Gateway webhook payload is invalid.");
 }
 public interface ICarrierAdapter { Task<CarrierRateResult> QuoteAsync(CarrierRateRequest request, CancellationToken ct = default); }
+
+public sealed class DisabledCarrier : ICarrierAdapter
+{
+    public Task<CarrierRateResult> QuoteAsync(CarrierRateRequest request, CancellationToken ct = default) => Task.FromException<CarrierRateResult>(new InvalidOperationException("Carrier integration is not configured."));
+}
 
 public static class CommerceServiceCollectionExtensions
 {
@@ -59,8 +85,23 @@ public static class CommerceServiceCollectionExtensions
     {
         services.AddOptions<CommerceGatewayOptions>().Configure(o => gateway?.Invoke(o));
         services.AddOptions<CarrierOptions>().Configure(o => carrier?.Invoke(o));
-        services.AddSingleton<IPaymentGateway>(sp => new SignedHttpPaymentGateway(new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }), sp.GetRequiredService<IOptions<CommerceGatewayOptions>>()));
-        services.AddSingleton<ICarrierAdapter>(sp => new SignedHttpCarrier(new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }), sp.GetRequiredService<IOptions<CarrierOptions>>()));
+        services.AddSingleton<IPaymentGateway>(sp =>
+        {
+            var options = sp.GetRequiredService<IOptions<CommerceGatewayOptions>>();
+            var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
+            return options.Value.Provider switch
+            {
+                "MomoSandbox" => new MomoSandboxPaymentGateway(http, options),
+                "GenericSignedGateway" => new SignedHttpPaymentGateway(http, options),
+                _ => throw new InvalidOperationException("Unsupported payment provider; no request was sent.")
+            };
+        });
+        services.AddSingleton<ICarrierAdapter>(sp => sp.GetRequiredService<IOptions<CarrierOptions>>().Value.Provider switch
+        {
+            "Disabled" => new DisabledCarrier(),
+            "GenericSignedGateway" => new SignedHttpCarrier(new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }), sp.GetRequiredService<IOptions<CarrierOptions>>()),
+            _ => throw new InvalidOperationException("Unsupported carrier provider; no shipment request was sent.")
+        });
         services.AddScoped<GatewayPaymentService>();
         services.AddScoped<GatewayRefundService>();
         return services;

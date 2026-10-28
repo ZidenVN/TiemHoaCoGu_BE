@@ -79,6 +79,55 @@ public sealed class CmsCatalogTests(ApiFixture fixture) : ApiTestBase(fixture)
     }
 
     [Fact]
+    public async Task ProductPackaging_HasNoSyntheticDefaultAndRequiresAllMeasurementsForConfirmation()
+    {
+        using var admin = await AuthenticatedAsync(await AdminTokenAsync());
+        var category = await CreateCategoryAsync(admin, "packaging");
+        var suffix = Guid.NewGuid().ToString("N")[..10];
+        var draft = await admin.PostAsync("/api/management/products", Json(new { categoryId = category.Id, code = "DRAFT-" + suffix, name = "Unmeasured SKU", price = 100m, isActive = true }));
+        Assert.Equal(HttpStatusCode.OK, draft.StatusCode);
+        using (var draftJson = JsonDocument.Parse(await draft.Content.ReadAsStringAsync()))
+        {
+            Assert.Equal(JsonValueKind.Null, draftJson.RootElement.GetProperty("shippingWeightGrams").ValueKind);
+            Assert.False(draftJson.RootElement.GetProperty("packagingSpecsConfirmed").GetBoolean());
+        }
+
+        var incomplete = await admin.PostAsync("/api/management/products", Json(new { categoryId = category.Id, code = "BAD-" + suffix, name = "Incomplete SKU", price = 100m, shippingWeightGrams = 500, packageLengthCm = 30m, packagingSpecsConfirmed = true, isActive = true }));
+        Assert.Equal(HttpStatusCode.BadRequest, incomplete.StatusCode);
+        var invalidPrecision = await admin.PostAsync("/api/management/products", Json(new { categoryId = category.Id, code = "SCALE-" + suffix, name = "Invalid scale SKU", price = 100m, shippingWeightGrams = 500, packageLengthCm = 30.001m, packageWidthCm = 20m, packageHeightCm = 10m, packagingSpecsConfirmed = true, isActive = true }));
+        Assert.Equal(HttpStatusCode.BadRequest, invalidPrecision.StatusCode);
+
+        var complete = await admin.PostAsync("/api/management/products", Json(new { categoryId = category.Id, code = "READY-" + suffix, name = "Measured SKU", price = 100m, shippingWeightGrams = 500, packageLengthCm = 30m, packageWidthCm = 20m, packageHeightCm = 10m, packagingSpecsConfirmed = true, isActive = true }));
+        Assert.Equal(HttpStatusCode.OK, complete.StatusCode);
+        using var created = JsonDocument.Parse(await complete.Content.ReadAsStringAsync());
+        var productId = created.RootElement.GetProperty("id").GetGuid();
+        var detailResponse = await admin.GetAsync($"/api/management/products/{productId}");
+        using var detail = JsonDocument.Parse(await detailResponse.Content.ReadAsStringAsync());
+        Assert.Equal(500, detail.RootElement.GetProperty("shippingWeightGrams").GetInt32());
+        Assert.Equal(30m, detail.RootElement.GetProperty("packageLengthCm").GetDecimal());
+        Assert.Equal(20m, detail.RootElement.GetProperty("packageWidthCm").GetDecimal());
+        Assert.Equal(10m, detail.RootElement.GetProperty("packageHeightCm").GetDecimal());
+        Assert.True(detail.RootElement.GetProperty("packagingSpecsConfirmed").GetBoolean());
+
+        var listResponse = await admin.GetAsync($"/api/management/products?search=READY-{suffix}");
+        using var list = JsonDocument.Parse(await listResponse.Content.ReadAsStringAsync());
+        Assert.True(list.RootElement.GetProperty("items")[0].GetProperty("packagingSpecsConfirmed").GetBoolean());
+
+        var oldStyleUpdate = await admin.PutAsync($"/api/management/products/{productId}", ProductJson(category.Id, "READY-" + suffix, "Edited without packaging", 101m));
+        Assert.Equal(HttpStatusCode.OK, oldStyleUpdate.StatusCode);
+        using var afterUpdate = JsonDocument.Parse(await oldStyleUpdate.Content.ReadAsStringAsync());
+        Assert.Equal(500, afterUpdate.RootElement.GetProperty("shippingWeightGrams").GetInt32());
+        Assert.Equal(30m, afterUpdate.RootElement.GetProperty("packageLengthCm").GetDecimal());
+        Assert.True(afterUpdate.RootElement.GetProperty("packagingSpecsConfirmed").GetBoolean());
+
+        var clearSpecs = await admin.PutAsync($"/api/management/products/{productId}", Json(new { categoryId = category.Id, code = "READY-" + suffix, name = "Measurements cleared", price = 102m, shippingWeightGrams = (int?)null, packageLengthCm = (decimal?)null, packageWidthCm = (decimal?)null, packageHeightCm = (decimal?)null, packagingSpecsConfirmed = false, isActive = true }));
+        Assert.Equal(HttpStatusCode.OK, clearSpecs.StatusCode);
+        using var cleared = JsonDocument.Parse(await clearSpecs.Content.ReadAsStringAsync());
+        Assert.Equal(JsonValueKind.Null, cleared.RootElement.GetProperty("shippingWeightGrams").ValueKind);
+        Assert.False(cleared.RootElement.GetProperty("packagingSpecsConfirmed").GetBoolean());
+    }
+
+    [Fact]
     public async Task ProductDelete_RejectsCartReference_AndGallerySupportsAddEditReorderDelete()
     {
         var admin = await AuthenticatedAsync(await AdminTokenAsync());

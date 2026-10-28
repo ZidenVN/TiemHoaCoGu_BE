@@ -20,6 +20,11 @@ using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 var isDev = builder.Environment.IsDevelopment();
+if (!builder.Environment.IsEnvironment("Testing") && builder.Configuration["Payments:Gateway:Provider"] != "MomoSandbox")
+    throw new InvalidOperationException("Only the hardcoded MoMo sandbox adapter may be used by a running app; generic/live payment providers are disabled.");
+var carrierProvider = builder.Configuration["Shipping:Carrier:Provider"] ?? "Disabled";
+if (!builder.Environment.IsEnvironment("Testing") && carrierProvider != "Disabled")
+    throw new InvalidOperationException("Carrier calls are disabled until a verified GHN staging adapter is configured; generic/live carrier endpoints are prohibited.");
 if (!isDev && (builder.Configuration.GetValue<bool>("Database:Initialize") || builder.Configuration.GetValue<bool>("Database:Seed")))
     throw new InvalidOperationException("Production requires reviewed database migrations; development initialization and seed must be disabled.");
 builder.WebHost.ConfigureKestrel(options =>
@@ -41,8 +46,12 @@ var protectionPath = builder.Configuration["DataProtection:KeyPath"];
 if (!string.IsNullOrWhiteSpace(protectionPath)) dataProtection.PersistKeysToFileSystem(new DirectoryInfo(Path.GetFullPath(protectionPath)));
 builder.Services.Configure<NotificationOptions>(builder.Configuration.GetSection("Notifications"));
 builder.Services.AddHttpClient("notifications");
+builder.Services.Configure<GhnStagingOptions>(builder.Configuration.GetSection("Shipping:GhnStaging"));
+builder.Services.AddHttpClient<GhnStagingAddressCatalog>(client => client.Timeout = TimeSpan.FromSeconds(10))
+    .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler { AllowAutoRedirect = false });
+builder.Services.AddScoped<IGhnStagingAddressCatalog>(sp => sp.GetRequiredService<GhnStagingAddressCatalog>());
 builder.Services.AddSingleton<INotificationTransport, SmtpNotificationTransport>();
-builder.Services.AddSingleton<INotificationTransport, HttpsSmsNotificationTransport>();
+builder.Services.AddSingleton<INotificationTransport, TwilioSmsNotificationTransport>();
 builder.Services.AddScoped<IAuditActor, HttpAuditActor>();
 builder.Services.AddDbContext<HoaSapDbContext>(options =>
 {

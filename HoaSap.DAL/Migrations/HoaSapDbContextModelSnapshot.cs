@@ -753,6 +753,23 @@ namespace HoaSap.DAL.Migrations
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
 
+                    b.Property<decimal?>("PackageHeightCm")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("PackageLengthCm")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<decimal?>("PackageWidthCm")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("decimal(18,2)");
+
+                    b.Property<bool>("PackagingSpecsConfirmed")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(false);
+
                     b.Property<decimal>("Price")
                         .HasPrecision(18, 2)
                         .HasColumnType("decimal(18,2)");
@@ -761,10 +778,8 @@ namespace HoaSap.DAL.Migrations
                         .IsRequired()
                         .HasColumnType("nvarchar(max)");
 
-                    b.Property<int>("ShippingWeightGrams")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("int")
-                        .HasDefaultValue(500);
+                    b.Property<int?>("ShippingWeightGrams")
+                        .HasColumnType("int");
 
                     b.Property<string>("ThumbnailUrl")
                         .IsRequired()
@@ -779,9 +794,13 @@ namespace HoaSap.DAL.Migrations
 
                     b.ToTable("Products", null, t =>
                         {
+                            t.HasCheckConstraint("CK_Product_ConfirmedPackaging", "PackagingSpecsConfirmed = 0 OR (ShippingWeightGrams IS NOT NULL AND ShippingWeightGrams > 0 AND PackageLengthCm IS NOT NULL AND PackageLengthCm > 0 AND PackageWidthCm IS NOT NULL AND PackageWidthCm > 0 AND PackageHeightCm IS NOT NULL AND PackageHeightCm > 0)");
+
+                            t.HasCheckConstraint("CK_Product_PackageDimensions", "(PackageLengthCm IS NULL OR PackageLengthCm > 0) AND (PackageWidthCm IS NULL OR PackageWidthCm > 0) AND (PackageHeightCm IS NULL OR PackageHeightCm > 0)");
+
                             t.HasCheckConstraint("CK_Product_Price", "Price >= 0 AND (OriginalPrice IS NULL OR OriginalPrice >= 0)");
 
-                            t.HasCheckConstraint("CK_Product_ShippingWeight", "ShippingWeightGrams > 0");
+                            t.HasCheckConstraint("CK_Product_ShippingWeight", "ShippingWeightGrams IS NULL OR ShippingWeightGrams > 0");
                         });
                 });
 
