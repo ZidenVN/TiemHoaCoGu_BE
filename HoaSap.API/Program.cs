@@ -23,8 +23,8 @@ var isDev = builder.Environment.IsDevelopment();
 if (!builder.Environment.IsEnvironment("Testing") && builder.Configuration["Payments:Gateway:Provider"] != "MomoSandbox")
     throw new InvalidOperationException("Only the hardcoded MoMo sandbox adapter may be used by a running app; generic/live payment providers are disabled.");
 var carrierProvider = builder.Configuration["Shipping:Carrier:Provider"] ?? "Disabled";
-if (!builder.Environment.IsEnvironment("Testing") && carrierProvider != "Disabled")
-    throw new InvalidOperationException("Carrier calls are disabled until a verified GHN staging adapter is configured; generic/live carrier endpoints are prohibited.");
+if (!builder.Environment.IsEnvironment("Testing") && carrierProvider != "Disabled" && carrierProvider != "GhnSandbox" && carrierProvider != "GhnStaging")
+    throw new InvalidOperationException("Carrier calls require a verified GHN staging adapter (GhnSandbox/GhnStaging); generic/live carrier endpoints are prohibited.");
 if (!isDev && (builder.Configuration.GetValue<bool>("Database:Initialize") || builder.Configuration.GetValue<bool>("Database:Seed")))
     throw new InvalidOperationException("Production requires reviewed database migrations; development initialization and seed must be disabled.");
 builder.WebHost.ConfigureKestrel(options =>

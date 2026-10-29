@@ -54,14 +54,93 @@ public class CommerceGatewayOptions
     static bool IsPrivate(IPAddress ip) { var b = ip.GetAddressBytes(); return ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && (b[0] == 10 || b[0] == 127 || b[0] == 169 && b[1] == 254 || b[0] == 172 && b[1] >= 16 && b[1] <= 31 || b[0] == 192 && b[1] == 168); }
 }
 
-public sealed class CarrierOptions : CommerceGatewayOptions { public CarrierOptions() => Provider = "Disabled"; public override void Validate() => ValidateTransport(); public string Origin { get; set; } = ""; public int QuoteLifetimeMinutes { get; set; } = 15; }
+public sealed class CarrierOptions : CommerceGatewayOptions
+{
+    public CarrierOptions() => Provider = "Disabled";
+    public override void Validate()
+    {
+        if (Provider is "GhnSandbox" or "GhnStaging")
+        {
+            if (string.IsNullOrWhiteSpace(Origin))
+                throw new InvalidOperationException("Carrier origin address is required.");
+            return;
+        }
+        ValidateTransport();
+    }
+    public string Origin { get; set; } = "";
+    public int QuoteLifetimeMinutes { get; set; } = 15;
+    public string Token { get; set; } = "";
+    public int ShopId { get; set; }
+    public int WarehouseDistrictId { get; set; } = 1442;
+    public string WarehouseWardCode { get; set; } = "20101";
+    public string SenderName { get; set; } = "Tiệm Hoa Cô Gu";
+    public string SenderPhone { get; set; } = "0901234567";
+    public string SenderAddress { get; set; } = "72 Lê Thánh Tôn, Bến Nghé, Quận 1, Hồ Chí Minh";
+    public bool SandboxEmulation { get; set; } = true;
+}
 public sealed record GatewayChargeRequest(Guid OrderId, decimal Amount, string Currency, string ReturnUrl, string ProviderKey = "");
 public sealed record GatewayChargeResult(bool Accepted, string TransactionCode, string? RedirectUrl, string? RawResponse);
 public sealed record GatewayRefundRequest(Guid RefundId, decimal Amount, string Currency, string OriginalTransactionCode);
 public sealed record GatewayRefundResult(bool Accepted, string TransactionCode, string? RawResponse);
 public sealed record GatewayPaymentQueryResult(string Outcome, int ResultCode, string ProviderOrderId, string RequestId, decimal Amount, string TransactionCode, string Message, long ResponseTime);
-public sealed record CarrierRateRequest(string Origin, string Destination, decimal Weight);
+public sealed record CarrierRateRequest(
+    string Origin,
+    string Destination,
+    decimal Weight,
+    int? LengthCm = null,
+    int? WidthCm = null,
+    int? HeightCm = null,
+    int? ToProvinceId = null,
+    int? ToWardId = null);
 public sealed record CarrierRateResult(bool Accepted, decimal Amount, string? TrackingNumber, string? RawResponse);
+
+public sealed record CarrierShipmentItem(
+    string Name,
+    string Code,
+    int Quantity,
+    decimal Price,
+    int WeightGrams,
+    int? LengthCm = null,
+    int? WidthCm = null,
+    int? HeightCm = null);
+
+public sealed record CarrierShipmentRequest(
+    string OrderCode,
+    string DeliveryCode,
+    string RecipientName,
+    string RecipientPhone,
+    string DestinationAddress,
+    int? ToProvinceId,
+    int? ToWardId,
+    decimal WeightKg,
+    int? LengthCm,
+    int? WidthCm,
+    int? HeightCm,
+    decimal CodAmount,
+    string Note,
+    IReadOnlyList<CarrierShipmentItem> Items);
+
+public sealed record CarrierShipmentResult(
+    bool Accepted,
+    string TrackingNumber,
+    decimal ShippingFee,
+    DateTime? ExpectedDeliveryDate,
+    string? Status,
+    string? RawResponse,
+    string? ErrorMessage = null);
+
+public sealed record CarrierCancelResult(
+    bool Accepted,
+    string? Message,
+    string? RawResponse);
+
+public sealed record CarrierTrackingResult(
+    bool Accepted,
+    string TrackingNumber,
+    string Status,
+    string? StatusDescription,
+    DateTime? UpdatedAt,
+    string? RawResponse);
 
 public interface IPaymentGateway
 {
@@ -72,11 +151,23 @@ public interface IPaymentGateway
     bool VerifyWebhook(ReadOnlySpan<byte> payload, string? signature, string? timestamp);
     GatewayWebhookRequest ParseWebhook(ReadOnlySpan<byte> payload) => JsonSerializer.Deserialize<GatewayWebhookRequest>(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? throw new JsonException("Gateway webhook payload is invalid.");
 }
-public interface ICarrierAdapter { Task<CarrierRateResult> QuoteAsync(CarrierRateRequest request, CancellationToken ct = default); }
+public interface ICarrierAdapter
+{
+    Task<CarrierRateResult> QuoteAsync(CarrierRateRequest request, CancellationToken ct = default);
+    Task<CarrierShipmentResult> CreateShipmentAsync(CarrierShipmentRequest request, CancellationToken ct = default)
+        => Task.FromResult(new CarrierShipmentResult(false, "", 0, null, "Disabled", null, "Carrier does not support shipment creation."));
+    Task<CarrierCancelResult> CancelShipmentAsync(string trackingNumber, CancellationToken ct = default)
+        => Task.FromResult(new CarrierCancelResult(false, "Carrier does not support shipment cancellation.", null));
+    Task<CarrierTrackingResult> TrackShipmentAsync(string trackingNumber, CancellationToken ct = default)
+        => Task.FromResult(new CarrierTrackingResult(false, trackingNumber, "Unknown", null, null, null));
+}
 
 public sealed class DisabledCarrier : ICarrierAdapter
 {
     public Task<CarrierRateResult> QuoteAsync(CarrierRateRequest request, CancellationToken ct = default) => Task.FromException<CarrierRateResult>(new InvalidOperationException("Carrier integration is not configured."));
+    public Task<CarrierShipmentResult> CreateShipmentAsync(CarrierShipmentRequest request, CancellationToken ct = default) => Task.FromException<CarrierShipmentResult>(new InvalidOperationException("Carrier integration is not configured."));
+    public Task<CarrierCancelResult> CancelShipmentAsync(string trackingNumber, CancellationToken ct = default) => Task.FromException<CarrierCancelResult>(new InvalidOperationException("Carrier integration is not configured."));
+    public Task<CarrierTrackingResult> TrackShipmentAsync(string trackingNumber, CancellationToken ct = default) => Task.FromException<CarrierTrackingResult>(new InvalidOperationException("Carrier integration is not configured."));
 }
 
 public static class CommerceServiceCollectionExtensions
@@ -99,6 +190,7 @@ public static class CommerceServiceCollectionExtensions
         services.AddSingleton<ICarrierAdapter>(sp => sp.GetRequiredService<IOptions<CarrierOptions>>().Value.Provider switch
         {
             "Disabled" => new DisabledCarrier(),
+            "GhnSandbox" or "GhnStaging" => new GhnStagingCarrierAdapter(new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }), sp.GetRequiredService<IOptions<CarrierOptions>>(), sp.GetService<IOptions<GhnStagingOptions>>()),
             "GenericSignedGateway" => new SignedHttpCarrier(new HttpClient(new HttpClientHandler { AllowAutoRedirect = false }), sp.GetRequiredService<IOptions<CarrierOptions>>()),
             _ => throw new InvalidOperationException("Unsupported carrier provider; no shipment request was sent.")
         });

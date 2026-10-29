@@ -10,6 +10,7 @@ public sealed class GhnStagingOptions
 {
     public string Token { get; set; } = "";
     public int ShopId { get; set; }
+    public bool FallbackCatalog { get; set; } = false;
 }
 
 public sealed record ShippingAreaDto(int Id, string Name, int? ParentId = null);
@@ -33,6 +34,8 @@ public sealed class GhnStagingAddressCatalog(HttpClient http, IOptions<GhnStagin
 
     public async Task<IReadOnlyList<ShippingAreaDto>> GetProvincesAsync(CancellationToken ct = default)
     {
+        if (_options.FallbackCatalog) return GetFallbackProvinces();
+
         var data = await FetchAsync("v3/master-data/province/all?offset=0&limit=200", ct);
         if (data is null) throw Unavailable();
         return data.Where(x => x.Status == 1 && x.Id > 0 && !string.IsNullOrWhiteSpace(x.Name))
@@ -43,12 +46,44 @@ public sealed class GhnStagingAddressCatalog(HttpClient http, IOptions<GhnStagin
     public async Task<IReadOnlyList<ShippingAreaDto>> GetWardsAsync(int provinceId, CancellationToken ct = default)
     {
         if (provinceId <= 0) throw new BusinessException(400, "Mã tỉnh GHN không hợp lệ.");
+        if (_options.FallbackCatalog) return GetFallbackWards(provinceId);
+
         var data = await FetchAsync($"v3/master-data/ward/all-by-province-id?province_id={provinceId}&offset=0&limit=200", ct);
         if (data is null) throw new BusinessException(400, "Tỉnh GHN không hợp lệ hoặc chưa có danh mục phường.");
         return data.Where(x => x.Status == 1 && x.Id > 0 && x.ParentId == provinceId && !string.IsNullOrWhiteSpace(x.Name))
             .Select(x => new ShippingAreaDto(x.Id, x.Name.Trim(), x.ParentId))
             .ToArray();
     }
+
+    private static IReadOnlyList<ShippingAreaDto> GetFallbackProvinces() =>
+    [
+        new(1000001, "Hồ Chí Minh", 1),
+        new(1000002, "Hà Nội", 1),
+        new(1000003, "Đà Nẵng", 1),
+        new(1000004, "Cần Thơ", 1),
+        new(1000005, "Bình Dương", 1)
+    ];
+
+    private static IReadOnlyList<ShippingAreaDto> GetFallbackWards(int provinceId) => provinceId switch
+    {
+        1000001 =>
+        [
+            new(1003580, "Phường Thủ Đức", 1000001),
+            new(1003581, "Phường Bến Nghé", 1000001),
+            new(1003582, "Phường Bến Thành", 1000001),
+            new(1003583, "Phường Tân Định", 1000001)
+        ],
+        1000002 =>
+        [
+            new(1002001, "Phường Tràng Tiền", 1000002),
+            new(1002002, "Phường Hàng Trống", 1000002)
+        ],
+        _ =>
+        [
+            new(provinceId * 1000 + 1, "Phường 1", provinceId),
+            new(provinceId * 1000 + 2, "Phường 2", provinceId)
+        ]
+    };
 
     private async Task<List<GhnArea>?> FetchAsync(string path, CancellationToken ct)
     {
