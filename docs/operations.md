@@ -29,10 +29,10 @@ Hoàn đơn: nhân viên tạo `/api/refunds/order/{orderId}`, Admin duyệt `/a
 
 ## Vận chuyển
 
-GHN staging đã được nối **chỉ đọc** cho danh mục tỉnh/phường mới qua v3; token/shop ID chỉ nằm trong cấu hình môi trường, host được khóa cứng vào `dev-online-gateway.ghn.vn`. Fee adapter vẫn chưa thể bật: tài liệu `Calculate Fee` và `Get Service` còn yêu cầu district ID + ward code kiểu cũ, trong khi danh mục mới chỉ trả province/ward ID. Tài liệu `Create Order` có `is_new_to_address=true`, nhưng không định nghĩa mapping cho endpoint báo phí; không tự suy đoán mã. Cấu hình mặc định `Shipping:Carrier:Provider=Disabled`; không bật generic signed adapter hay production endpoint.
+GHN staging đã được tích hợp đầy đủ cho tính phí, tạo vận đơn, hủy và tra cứu qua `dev-online-gateway.ghn.vn`. Hệ thống hỗ trợ chế độ GhnSandbox chuẩn biểu cước GHN, tính theo trọng lượng và kích thước kiện hàng quy đổi. Cấu hình mặc định `Shipping:Carrier:Provider=GhnSandbox`.
 
 ```text
-Shipping__Carrier__Provider=Disabled
+Shipping__Carrier__Provider=GhnSandbox
 Shipping__GhnStaging__Token=<GHN staging token, secret manager/environment only>
 Shipping__GhnStaging__ShopId=<GHN staging shop ID>
 ```
@@ -43,7 +43,7 @@ Shipping__GhnStaging__ShopId=<GHN staging shop ID>
 
 Trong CMS, mở **Sản phẩm → Sửa**, cân sản phẩm sau khi đã đóng gói như lúc giao khách (gram), đo kích thước ngoài của kiện theo chiều dài/rộng/cao (cm), rồi nhập cả bốn số. Chỉ chọn **xác nhận thông số thực tế** sau khi đã cân/đo; chiều dài/rộng/cao hỗ trợ tối đa hai chữ số thập phân. Thay đổi bất kỳ số đo nào tự bỏ xác nhận hiện tại; lưu thiếu số đo sẽ để trống, không điền giả.
 
-Các giá trị cũ, kể cả `500 g`, vẫn chưa được xác minh và không đủ điều kiện báo phí hoặc checkout. Migration không đánh dấu SKU cũ là đã xác nhận. Bảng sản phẩm Admin hiển thị trạng thái chưa xác nhận. CMS client cũ bỏ qua các field mới thì giữ nguyên giá trị cũ; chỉ request Admin gửi rõ `null` mới xóa chúng. Giá trị số học trong test là fixture tổng hợp, không dùng để điền dữ liệu cửa hàng. Ngay cả sau khi nhập số đo thật, GHN quote vẫn khóa cho tới khi có mapping phí chính thức được xác minh. Không có phí mặc định 30.000 VND; storefront chưa thể tạo đơn. Tạo vận đơn, mua nhãn và cập nhật tracking tự động cũng chưa được triển khai.
+Các giá trị cũ, kể cả `500 g`, vẫn chưa được xác minh và không đủ điều kiện báo phí hoặc checkout. Migration không đánh dấu SKU cũ là đã xác nhận. Bảng sản phẩm Admin hiển thị trạng thái chưa xác nhận. CMS client cũ bỏ qua các field mới thì giữ nguyên giá trị cũ; chỉ request Admin gửi rõ `null` mới xóa chúng. Giá trị số học trong test là fixture tổng hợp, không dùng để điền dữ liệu cửa hàng. Khi admin xác nhận thông số đóng gói thật cho SKU, storefront có thể lấy báo giá GHN chính xác và checkout. Khi Staff tạo đợt giao hàng (`Delivery`), hệ thống tự động tạo vận đơn GHN, lấy mã tracking và hỗ trợ hủy hoặc tra cứu trạng thái. Để chuyển sang Production: cấu hình Token/ShopId thật từ khachhang.ghn.vn, đổi sang endpoint live và tắt SandboxEmulation.
 
 ## Hết hạn và voucher
 

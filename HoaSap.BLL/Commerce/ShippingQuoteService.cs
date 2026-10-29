@@ -45,7 +45,11 @@ public sealed class ShippingQuoteService(HoaSapDbContext db, ICarrierAdapter car
         var origin = cfg.Origin?.Trim() ?? "";
         if (origin.Length == 0) throw new BusinessException(503, "Chưa cấu hình địa chỉ kho gửi hàng.");
         CarrierRateResult result;
-        try { result = await carrier.QuoteAsync(new CarrierRateRequest(origin, destination, weight), ct); }
+        var maxLength = snapshot.Max(x => (int)Math.Ceiling(x.PackageLengthCm ?? 10m));
+        var maxWidth = snapshot.Max(x => (int)Math.Ceiling(x.PackageWidthCm ?? 10m));
+        var totalHeight = snapshot.Sum(x => (int)Math.Ceiling((x.PackageHeightCm ?? 5m) * x.Quantity));
+        var rateRequest = new CarrierRateRequest(origin, destination, weight, maxLength, maxWidth, totalHeight, request.ProvinceId, request.WardId);
+        try { result = await carrier.QuoteAsync(rateRequest, ct); }
         catch (InvalidOperationException) when (carrier is DisabledCarrier) { throw new BusinessException(503, "Chưa có mapping phí GHN chính thức cho danh mục tỉnh/phường hiện tại; không tạo đơn."); }
         catch (Exception ex) when (ex is InvalidOperationException or HttpRequestException or TaskCanceledException) { throw new BusinessException(503, "Chưa lấy được báo giá nhà vận chuyển."); }
         if (!result.Accepted || result.Amount < 0 || result.Amount > 1_000_000_000m || decimal.Round(result.Amount, 2) != result.Amount) throw new BusinessException(400, "Nhà vận chuyển không cung cấp báo giá hợp lệ.");
